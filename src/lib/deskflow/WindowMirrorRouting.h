@@ -15,4 +15,10 @@ struct WindowMirrorRouting
   // The other computer's cursor is over a mirrored window: buttons and scrolling are also
   // injected into the Mac app.
   inline static std::atomic<bool> pointerInMirror{false};
+  // A connected computer can show mirrored windows: holding Control+Option while pressing
+  // the left button grabs the window under the cursor (see OSXComputer's event tap).
+  inline static std::atomic<bool> grabEnabled{false};
+  // A Control+Option window grab is in progress: the press never reached the app, and
+  // Deskflow moves the window with the cursor until the button is released.
+  inline static std::atomic<bool> grabbing{false};
 };

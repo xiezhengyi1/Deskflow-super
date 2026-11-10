@@ -1742,6 +1742,22 @@ CGEventRef OSXComputer::handleCGInputEvent(CGEventTapProxy proxy, CGEventType ty
       !computer->m_isOnComputer && keyGoesToMirroredWindow(type, event))
     return event;
 
+  // Control+Option + left press grabs the window under the cursor: the app never sees the
+  // press, Deskflow moves the window itself and, at the edge, hands it to the other computer
+  // (the window server would stop a title-bar drag at the menu bar).
+  bool swallowGrabButton = false;
+  if (type == kCGEventLeftMouseDown && computer->m_isOnComputer && WindowMirrorRouting::grabEnabled) {
+    const CGEventFlags flags = CGEventGetFlags(event);
+    if ((flags & kCGEventFlagMaskControl) && (flags & kCGEventFlagMaskAlternate) &&
+        !(flags & kCGEventFlagMaskCommand)) {
+      WindowMirrorRouting::grabbing = true; // before the press reaches the server
+      swallowGrabButton = true;
+    }
+  } else if (type == kCGEventLeftMouseUp && WindowMirrorRouting::grabbing) {
+    WindowMirrorRouting::grabbing = false;
+    swallowGrabButton = true;
+  }
+
   switch (type) {
   case kCGEventLeftMouseDown:
   case kCGEventRightMouseDown:
@@ -1800,6 +1816,11 @@ CGEventRef OSXComputer::handleCGInputEvent(CGEventTapProxy proxy, CGEventType ty
   }
 
   if (computer->m_isOnComputer) {
+    if (swallowGrabButton)
+      return nullptr;
+    // Moves during a grab reach apps as plain moves, since they never saw the press.
+    if (type == kCGEventLeftMouseDragged && WindowMirrorRouting::grabbing)
+      CGEventSetType(event, kCGEventMouseMoved);
     return event;
   } else {
     return nullptr;

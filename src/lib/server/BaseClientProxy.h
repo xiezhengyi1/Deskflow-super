@@ -8,6 +8,7 @@
 #pragma once
 
 #include "deskflow/IClient.h"
+#include "deskflow/WindowMirrorRouting.h"
 #include <memory>
 
 namespace deskflow {
@@ -61,7 +62,12 @@ public:
   void setEdgeFileDrag(bool enabled) { m_edgeFileDrag = enabled; }
   // Client can show windows dragged over from the server (file drag mode 4).
   bool usesWindowMirror() const { return m_windowMirror; }
-  void setWindowMirror(bool enabled) { m_windowMirror = enabled; }
+  void setWindowMirror(bool enabled)
+  {
+    m_windowMirror = enabled;
+    if (enabled)
+      WindowMirrorRouting::grabEnabled = true;
+  }
 
   bool usesNativeFileDrag() const
   {

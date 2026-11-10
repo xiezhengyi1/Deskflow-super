@@ -22,13 +22,15 @@ struct DraggedWindow
   qint64 pid = 0;
   QRectF frame;   // global, top-left origin, points
   QPointF grab;   // cursor position inside the window when the drag began, points
+  std::optional<QPointF> home; // where the window was before the drag; it returns there
   QString title;
   QString app;
 };
 
 // Called when the left button goes down: remembers the window under the cursor.
 void noteLeftDown();
-// The remembered window, if it has been moving by its title bar since the press.
+// The remembered window, if it has been moving by its title bar since the press, or was
+// grabbed with Control+Option held (WindowMirrorRouting::grabbing).
 std::optional<DraggedWindow> draggedWindow();
 // Ends the window server's title-bar drag so the window stops following the cursor.
 void endWindowDrag();

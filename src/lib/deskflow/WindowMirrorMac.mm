@@ -4,7 +4,9 @@
  */
 #include "WindowMirrorPlatform.h"
 #include "NativeFileDragPlatform.h"
+#include "WindowMirrorRouting.h"
 #include "base/Log.h"
+#include <QTimer>
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <CoreMedia/CoreMedia.h>
@@ -26,8 +28,21 @@ struct Pressed
   pid_t pid = 0;
   CGRect bounds = CGRectZero;
   CGPoint cursor = CGPointZero;
+  bool grab = false;                  // Control+Option grab: Deskflow moves the window
+  AXUIElementRef element = nullptr;   // retained, for moving a grabbed window
+  CGPoint movedTo = CGPointZero;
 };
 Pressed s_pressed;
+QTimer *s_follow = nullptr;
+
+void clearPressed()
+{
+  if (s_follow)
+    s_follow->stop();
+  if (s_pressed.element)
+    CFRelease(s_pressed.element);
+  s_pressed = {};
+}
 
 struct Hidden
 {
@@ -186,6 +201,24 @@ void postToWindow(CGWindowID windowId, CGEventRef event)
   if (const pid_t pid = windowPid(windowId))
     CGEventPostToPid(pid, event);
   CFRelease(event);
+}
+
+// Moves a grabbed window with the cursor until the button is released or it is taken over.
+void followGrab()
+{
+  if (!s_pressed.grab || !s_pressed.element || !NativeFileDragPlatform::leftButtonDown()) {
+    if (s_follow)
+      s_follow->stop();
+    return;
+  }
+  const CGPoint cursor = cursorNow();
+  const CGPoint target = CGPointMake(
+      s_pressed.bounds.origin.x + cursor.x - s_pressed.cursor.x, s_pressed.bounds.origin.y + cursor.y - s_pressed.cursor.y
+  );
+  if (std::fabs(target.x - s_pressed.movedTo.x) < 0.5 && std::fabs(target.y - s_pressed.movedTo.y) < 0.5)
+    return;
+  s_pressed.movedTo = target;
+  setAxPosition(s_pressed.element, target);
 }
 } // namespace
 
@@ -415,7 +448,7 @@ private:
 // ---------------------------------------------------------------- platform API
 void WindowMirrorPlatform::noteLeftDown()
 {
-  s_pressed = {};
+  clearPressed();
   const CGPoint cursor = cursorNow();
   CFArrayRef list =
       CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
@@ -434,6 +467,23 @@ void WindowMirrorPlatform::noteLeftDown()
     break;
   }
   CFRelease(list);
+
+  if (!s_pressed.valid || !WindowMirrorRouting::grabbing)
+    return;
+  NSDictionary *info = windowInfo(s_pressed.windowId);
+  s_pressed.grab = true;
+  s_pressed.movedTo = s_pressed.bounds.origin;
+  s_pressed.element = findAxWindow(s_pressed.pid, s_pressed.bounds, info ? (NSString *)info[(id)kCGWindowName] : nil);
+  LOG_DEBUG(
+      "window mirror: Control+Option grab of window %u (%s)%s", s_pressed.windowId,
+      info ? [(NSString *)info[(id)kCGWindowOwnerName] UTF8String] : "?", s_pressed.element ? "" : ", cannot move it"
+  );
+  if (!s_follow) {
+    s_follow = new QTimer;
+    s_follow->setInterval(8);
+    QObject::connect(s_follow, &QTimer::timeout, [] { followGrab(); });
+  }
+  s_follow->start();
 }
 
 std::optional<WindowMirrorPlatform::DraggedWindow> WindowMirrorPlatform::draggedWindow()
@@ -445,7 +495,7 @@ std::optional<WindowMirrorPlatform::DraggedWindow> WindowMirrorPlatform::dragged
     return std::nullopt;
   const CGRect now = boundsOf(info);
   const CGRect then = s_pressed.bounds;
-  if (std::fabs(now.size.width - then.size.width) > 1 || std::fabs(now.size.height - then.size.height) > 1)
+  if (!s_pressed.grab && std::fabs(now.size.width - then.size.width) > 1 || std::fabs(now.size.height - then.size.height) > 1)
     return std::nullopt; // resized, not moved
   const double moved = std::hypot(now.origin.x - then.origin.x, now.origin.y - then.origin.y);
   // A window already at the top cannot move further up, so also accept a press on the title
@@ -454,13 +504,14 @@ std::optional<WindowMirrorPlatform::DraggedWindow> WindowMirrorPlatform::dragged
   const bool titleBarPress = s_pressed.cursor.y - then.origin.y < 52;
   const bool pinnedAtTop = now.origin.y <= menuBarHeight() + 2;
   const double pushed = std::hypot(cursor.x - s_pressed.cursor.x, cursor.y - s_pressed.cursor.y);
-  if (moved < 8 && !(titleBarPress && pinnedAtTop && pushed > 20))
+  if (!s_pressed.grab && moved < 8 && !(titleBarPress && pinnedAtTop && pushed > 20))
     return std::nullopt;
   DraggedWindow window;
   window.windowId = s_pressed.windowId;
   window.pid = s_pressed.pid;
   window.frame = QRectF(now.origin.x, now.origin.y, now.size.width, now.size.height);
   window.grab = QPointF(s_pressed.cursor.x - then.origin.x, s_pressed.cursor.y - then.origin.y);
+  window.home = QPointF(then.origin.x, then.origin.y);
   window.title = fromNSString(info[(id)kCGWindowName]);
   window.app = fromNSString(info[(id)kCGWindowOwnerName]);
   return window;
@@ -468,11 +519,16 @@ std::optional<WindowMirrorPlatform::DraggedWindow> WindowMirrorPlatform::dragged
 
 void WindowMirrorPlatform::endWindowDrag()
 {
+  if (s_pressed.grab) {
+    // The window server is not dragging anything: just stop moving the window.
+    clearPressed();
+    return;
+  }
   CGEventRef up = CGEventCreateMouseEvent(nullptr, kCGEventLeftMouseUp, cursorNow(), kCGMouseButtonLeft);
   CGEventSetIntegerValueField(up, kCGEventSourceUserData, kNativeFileDragInputTag);
   CGEventPost(kCGSessionEventTap, up);
   CFRelease(up);
-  s_pressed = {};
+  clearPressed();
 }
 
 bool WindowMirrorPlatform::canCapture()
@@ -496,7 +552,7 @@ bool WindowMirrorPlatform::hide(const DraggedWindow &window)
   Hidden hidden;
   hidden.element = element;
   hidden.pid = static_cast<pid_t>(window.pid);
-  hidden.original = bounds.origin;
+  hidden.original = window.home ? CGPointMake(window.home->x(), window.home->y()) : bounds.origin;
   hidden.hiddenAt = hiddenOrigin();
   s_hidden[window.windowId] = hidden;
   setAxPosition(element, hidden.hiddenAt);
