@@ -1,0 +1,1005 @@
+/*
+ * Deskflow -- mouse and keyboard sharing utility
+ * SPDX-FileCopyrightText: (C) 2025 Deskflow Developers
+ * SPDX-FileCopyrightText: (C) 2012 - 2016, 2026 Synergy App Ltd
+ * SPDX-FileCopyrightText: (C) 2002 Chris Schoeneman
+ * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+ */
+
+#include "client/ServerProxy.h"
+
+#include "base/IEventQueue.h"
+#include "base/Log.h"
+#include "client/Client.h"
+#include "common/Settings.h"
+#include "deskflow/Clipboard.h"
+#include "deskflow/ClipboardChunk.h"
+#include "deskflow/DeskflowException.h"
+#include "deskflow/NativeFileDrag.h"
+#include "deskflow/OptionTypes.h"
+#include "deskflow/ProtocolTypes.h"
+#include "deskflow/ProtocolUtil.h"
+#include "deskflow/StreamChunker.h"
+#include "io/IStream.h"
+#include <QCborValue>
+
+#include <cstring>
+
+//
+// ServerProxy
+//
+
+ServerProxy::ServerProxy(Client *client, deskflow::IStream *stream, IEventQueue *events)
+    : m_client(client),
+      m_stream(stream),
+      m_events(events)
+{
+  m_mouseMotion.setFactor(Settings::value(Settings::Client::MouseSpeed).toDouble());
+#if defined(Q_OS_WIN)
+  m_macShortcuts = Settings::value(Settings::Client::MacShortcuts).toBool();
+#endif
+  assert(m_client != nullptr);
+  assert(m_stream != nullptr);
+
+  m_events->addHandler(EventTypes::NativeFileDragOutgoing, m_nativeDragChannel.get(), [this](const Event &event) {
+    const auto &data = *static_cast<const NativeFileDragEvent *>(event.getDataObject());
+    const auto bytes = QCborValue(data.packet).toCbor().toStdString();
+    ProtocolUtil::writef(m_stream, kMsgDNativeFileDrag, &bytes);
+  });
+
+  // initialize modifier translation table
+  for (KeyModifierID id = 0; id < kKeyModifierIDLast; ++id)
+    m_modifierTranslationTable[id] = id;
+
+  // handle data on stream
+  m_events->addHandler(EventTypes::StreamInputReady, m_stream->getEventTarget(), [this](const auto &) {
+    handleData();
+  });
+  m_events->addHandler(EventTypes::ClipboardSending, this, [this](const auto &e) {
+    ClipboardChunk::send(m_stream, e.getDataObject());
+  });
+
+  // send heartbeat
+  setKeepAliveRate(kKeepAliveRate);
+}
+
+ServerProxy::~ServerProxy()
+{
+  stopLocalCursorTimer();
+  m_events->removeHandler(EventTypes::NativeFileDragOutgoing, m_nativeDragChannel.get());
+  if (m_nativeFileDrag)
+    if constexpr (NativeFileDrag::supported)
+      NativeFileDrag::detach(QStringLiteral("server"));
+  setKeepAliveRate(-1.0);
+  m_events->removeHandler(EventTypes::StreamInputReady, m_stream->getEventTarget());
+  m_events->removeHandler(EventTypes::ClipboardSending, this);
+}
+
+void ServerProxy::resetKeepAliveAlarm()
+{
+  if (m_keepAliveAlarmTimer != nullptr) {
+    m_events->removeHandler(EventTypes::Timer, m_keepAliveAlarmTimer);
+    m_events->deleteTimer(m_keepAliveAlarmTimer);
+    m_keepAliveAlarmTimer = nullptr;
+  }
+  if (m_keepAliveAlarm > 0.0) {
+    m_keepAliveAlarmTimer = m_events->newOneShotTimer(m_keepAliveAlarm, nullptr);
+    m_events->addHandler(EventTypes::Timer, m_keepAliveAlarmTimer, [this](const auto &) { handleKeepAliveAlarm(); });
+  }
+}
+
+void ServerProxy::setKeepAliveRate(double rate)
+{
+  m_keepAliveAlarm = rate * kKeepAlivesUntilDeath;
+  resetKeepAliveAlarm();
+}
+
+void ServerProxy::handleData()
+{
+  // handle messages until there are no more.  first read message code.
+  uint8_t code[4];
+  uint32_t n = m_stream->read(code, 4);
+  unsigned processed = 0;
+  while (n != 0) {
+    // verify we got an entire code
+    if (n != 4) {
+      LOG_ERR("incomplete message from server: %d bytes", n);
+      requestDisconnect("incomplete message from server");
+      return;
+    }
+
+    // parse message
+    LOG_VERBOSE("msg from server: %c%c%c%c", code[0], code[1], code[2], code[3]);
+    try {
+      switch ((this->*m_parser)(code)) {
+        using enum ConnectionResult;
+      case Okay:
+        break;
+
+      case Unknown:
+        LOG_ERR("invalid message from server: %c%c%c%c", code[0], code[1], code[2], code[3]);
+        // not possible to determine message boundaries
+        // read the whole stream to discard unkonwn data
+        while (m_stream->read(nullptr, 4))
+          ;
+        break;
+
+      case Disconnect:
+        return;
+      }
+    } catch (const BadClientException &e) {
+      LOG_ERR("protocol error from server: %s", e.what());
+      ProtocolUtil::writef(m_stream, kMsgEBad);
+      requestDisconnect("invalid message from server");
+      return;
+    }
+
+    // Yield to cursor feedback and keepalives even when the server keeps sending.
+    if (++processed == 64) {
+      if (m_stream->isReady())
+        m_events->addEvent(Event(EventTypes::StreamInputReady, m_stream->getEventTarget()));
+      break;
+    }
+
+    // next message
+    n = m_stream->read(code, 4);
+  }
+
+  flushCompressedMouse();
+
+  // one reply per batch still carries the ACK; replying to every mouse
+  // message doubled the encrypted packets in both directions.
+  if (m_replyPending) {
+    m_replyPending = false;
+    ProtocolUtil::writef(m_stream, kMsgCNoop);
+  }
+}
+
+ServerProxy::ConnectionResult ServerProxy::parseHandshakeMessage(const uint8_t *code)
+{
+  using enum ConnectionResult;
+  using enum deskflow::core::ConnectionRefusal;
+
+  if (memcmp(code, kMsgQInfo, 4) == 0) {
+    queryInfo();
+  }
+
+  else if (memcmp(code, kMsgCInfoAck, 4) == 0) {
+    infoAcknowledgment();
+  }
+
+  else if (memcmp(code, kMsgDSetOptions, 4) == 0) {
+    setOptions();
+
+    // handshake is complete
+    m_parser = &ServerProxy::handleMessage;
+
+    m_client->handshakeComplete();
+  }
+
+  else if (memcmp(code, kMsgCResetOptions, 4) == 0) {
+    resetOptions();
+  }
+
+  else if (memcmp(code, kMsgCKeepAlive, 4) == 0) {
+    // echo keep alives and reset alarm
+    ProtocolUtil::writef(m_stream, kMsgCKeepAlive);
+    resetKeepAliveAlarm();
+  }
+
+  else if (memcmp(code, kMsgCNoop, 4) == 0) {
+    // accept and discard no-op
+  }
+
+  else if (memcmp(code, kMsgCClose, 4) == 0) {
+    // server wants us to hangup
+    LOG_VERBOSE("recv close");
+    requestDisconnect(nullptr);
+    return Disconnect;
+  }
+
+  else if (memcmp(code, kMsgEIncompatible, 4) == 0) {
+    int32_t major;
+    int32_t minor;
+    ProtocolUtil::readf(m_stream, kMsgEIncompatible + 4, &major, &minor);
+    LOG_ERR("server has incompatible version %d.%d", major, minor);
+    requestRefuseConnection(IncompatibleVersion, "server has incompatible version");
+    return Disconnect;
+  }
+
+  else if (memcmp(code, kMsgEBusy, 4) == 0) {
+    LOG_ERR("server already has a connected client with name \"%s\"", m_client->getName().c_str());
+    requestRefuseConnection(AlreadyConnected, "server already has a connected client with our name");
+    return Disconnect;
+  }
+
+  else if (memcmp(code, kMsgEUnknown, 4) == 0) {
+    LOG_ERR("server refused client with name \"%s\"", m_client->getName().c_str());
+    requestRefuseConnection(UnknownClient, "server refused client with our name");
+    return Disconnect;
+  }
+
+  else if (memcmp(code, kMsgEBad, 4) == 0) {
+    LOG_ERR("server disconnected due to a protocol error");
+    requestRefuseConnection(ProtocolError, "server reported a protocol error");
+    return Disconnect;
+  } else {
+    return Unknown;
+  }
+
+  return Okay;
+}
+
+ServerProxy::ConnectionResult ServerProxy::handleMessage(const uint8_t *code)
+{
+  const auto result = parseMessage(code);
+  if (result == ConnectionResult::Okay) {
+    // send a reply.  this is intended to work around a delay when
+    // running a linux server and an OS X (any BSD?) client.  the
+    // client waits to send an ACK (if the system control flag
+    // net.inet.tcp.delayed_ack is 1) in hopes of piggybacking it
+    // on a data packet.  we provide that packet here.  i don't
+    // know why a delayed ACK should cause the server to wait since
+    // TCP_NODELAY is enabled.  handleData() sends it once the batch is done.
+    m_replyPending = true;
+  }
+  return result;
+}
+
+ServerProxy::ConnectionResult ServerProxy::parseMessage(const uint8_t *code)
+{
+  using enum ConnectionResult;
+
+  if (memcmp(code, kMsgDNativeFileDrag, 4) == 0) {
+    std::string bytes;
+    ProtocolUtil::readf(m_stream, kMsgDNativeFileDrag + 4, &bytes);
+    if (!m_nativeFileDrag)
+      throw BadClientException("Native file drag is not enabled");
+    if constexpr (NativeFileDrag::supported)
+      NativeFileDrag::receive(QStringLiteral("server"), QByteArray::fromStdString(bytes));
+  } else if (memcmp(code, kMsgDMouseMove, 4) == 0) {
+    mouseMove();
+  }
+
+  else if (memcmp(code, kMsgDMouseRelMove, 4) == 0) {
+    mouseRelativeMove();
+  }
+
+  else if (memcmp(code, kMsgDMouseWheel, 4) == 0) {
+    mouseWheel();
+  }
+
+  else if (memcmp(code, kMsgDKeyDown1_1, 4) == 0) {
+    uint16_t id = 0;
+    uint16_t mask = 0;
+    uint16_t button = 0;
+    ProtocolUtil::readf(m_stream, kMsgDKeyDown1_1 + 4, &id, &mask, &button);
+    LOG_VERBOSE("recv key down id=0x%08x, mask=0x%04x, button=0x%04x", id, mask, button);
+
+    keyDown(id, mask, button, "");
+  }
+
+  else if (memcmp(code, kMsgDKeyUp, 4) == 0) {
+    keyUp();
+  }
+
+  else if (memcmp(code, kMsgDMouseDown, 4) == 0) {
+    mouseDown();
+  }
+
+  else if (memcmp(code, kMsgDMouseUp, 4) == 0) {
+    mouseUp();
+  }
+
+  else if (memcmp(code, kMsgDKeyRepeat1_1, 4) == 0) {
+    uint16_t id = 0;
+    uint16_t mask = 0;
+    uint16_t count = 0;
+    uint16_t button = 0;
+    ProtocolUtil::readf(m_stream, kMsgDKeyRepeat1_1 + 4, &id, &mask, &count, &button);
+    LOG_VERBOSE("recv key repeat id=0x%08x, mask=0x%04x, count=%d, button=0x%04x", id, mask, count, button);
+
+    keyRepeat(id, mask, count, button, "");
+  }
+
+  else if (memcmp(code, kMsgCKeepAlive, 4) == 0) {
+    // echo keep alives and reset alarm
+    ProtocolUtil::writef(m_stream, kMsgCKeepAlive);
+    resetKeepAliveAlarm();
+  }
+
+  else if (memcmp(code, kMsgCNoop, 4) == 0) {
+    // accept and discard no-op
+  }
+
+  else if (memcmp(code, kMsgCEnter, 4) == 0) {
+    enter();
+  }
+
+  else if (memcmp(code, kMsgCLeave, 4) == 0) {
+    leave();
+  }
+
+  else if (memcmp(code, kMsgCClipboard, 4) == 0) {
+    grabClipboard();
+  }
+
+  else if (memcmp(code, kMsgCScreenSaver, 4) == 0) {
+    screensaver();
+  }
+
+  else if (memcmp(code, kMsgQInfo, 4) == 0) {
+    queryInfo();
+  }
+
+  else if (memcmp(code, kMsgCInfoAck, 4) == 0) {
+    infoAcknowledgment();
+  }
+
+  else if (memcmp(code, kMsgDClipboard, 4) == 0) {
+    setClipboard();
+  }
+
+  else if (memcmp(code, kMsgCResetOptions, 4) == 0) {
+    resetOptions();
+  }
+
+  else if (memcmp(code, kMsgDSetOptions, 4) == 0) {
+    setOptions();
+  }
+
+  else if (memcmp(code, kMsgCClose, 4) == 0) {
+    // server wants us to hangup
+    LOG_VERBOSE("recv close");
+    requestDisconnect(nullptr);
+    return Disconnect;
+  } else if (memcmp(code, kMsgEBad, 4) == 0) {
+    LOG_ERR("server disconnected due to a protocol error");
+    requestDisconnect("server reported a protocol error");
+    return Disconnect;
+  } else {
+    return Unknown;
+  }
+
+  return Okay;
+}
+
+void ServerProxy::handleKeepAliveAlarm()
+{
+  LOG_INFO("server is dead");
+  requestDisconnect("server is not responding");
+}
+
+void ServerProxy::requestDisconnect(const char *message)
+{
+  m_events->addEvent(Event(
+      EventTypes::ClientDisconnectRequested, m_stream->getEventTarget(),
+      new Client::DisconnectRequest(Client::DisconnectRequest::Kind::Disconnect, message)
+  ));
+}
+
+void ServerProxy::requestRefuseConnection(deskflow::core::ConnectionRefusal reason, const char *message)
+{
+  m_events->addEvent(Event(
+      EventTypes::ClientDisconnectRequested, m_stream->getEventTarget(), new Client::DisconnectRequest(reason, message)
+  ));
+}
+
+void ServerProxy::onInfoChanged()
+{
+  // ignore mouse motion until we receive acknowledgment of our info
+  // change message.
+  m_ignoreMouse = true;
+
+  // send info update
+  queryInfo();
+}
+
+bool ServerProxy::onGrabClipboard(ClipboardID id)
+{
+  LOG_VERBOSE("sending clipboard %d changed", id);
+  ProtocolUtil::writef(m_stream, kMsgCClipboard, id, m_seqNum);
+  return true;
+}
+
+void ServerProxy::onClipboardChanged(ClipboardID id, const IClipboard *clipboard)
+{
+  std::string data = IClipboard::marshall(clipboard);
+  LOG_DEBUG("sending clipboard %d seqnum=%d", id, m_seqNum);
+
+  StreamChunker::sendClipboard(data, data.size(), id, m_seqNum, m_events, this);
+}
+
+void ServerProxy::flushCompressedMouse()
+{
+  if (m_compressMouse) {
+    m_compressMouse = false;
+    m_client->mouseMove(m_xMouse, m_yMouse);
+  }
+  if (m_compressMouseRelative) {
+    m_compressMouseRelative = false;
+    applyRelativeMotion(m_dxMouse, m_dyMouse);
+    m_dxMouse = 0;
+    m_dyMouse = 0;
+  }
+}
+
+void ServerProxy::sendInfo(const ClientInfo &info)
+{
+  LOG_VERBOSE("sending info shape=%d,%d %dx%d", info.m_x, info.m_y, info.m_w, info.m_h);
+  ProtocolUtil::writef(m_stream, kMsgDInfo, info.m_x, info.m_y, info.m_w, info.m_h, 0, info.m_mx, info.m_my);
+}
+
+KeyID ServerProxy::translateKey(KeyID id) const
+{
+  static const KeyID s_translationTable[kKeyModifierIDLast][2] = {
+      {kKeyNone, kKeyNone},     {kKeyShift_L, kKeyShift_R}, {kKeyControl_L, kKeyControl_R}, {kKeyAlt_L, kKeyAlt_R},
+      {kKeyMeta_L, kKeyMeta_R}, {kKeySuper_L, kKeySuper_R}, {kKeyAltGr, kKeyAltGr}
+  };
+
+  KeyModifierID id2 = kKeyModifierIDNull;
+  uint32_t side = 0;
+  switch (id) {
+  case kKeyShift_L:
+    id2 = kKeyModifierIDShift;
+    side = 0;
+    break;
+
+  case kKeyShift_R:
+    id2 = kKeyModifierIDShift;
+    side = 1;
+    break;
+
+  case kKeyControl_L:
+    id2 = kKeyModifierIDControl;
+    side = 0;
+    break;
+
+  case kKeyControl_R:
+    id2 = kKeyModifierIDControl;
+    side = 1;
+    break;
+
+  case kKeyAlt_L:
+    id2 = kKeyModifierIDAlt;
+    side = 0;
+    break;
+
+  case kKeyAlt_R:
+    id2 = kKeyModifierIDAlt;
+    side = 1;
+    break;
+
+  case kKeyAltGr:
+    id2 = kKeyModifierIDAltGr;
+    side = 1; // there is only one alt gr key on the right side
+    break;
+
+  case kKeyMeta_L:
+    id2 = kKeyModifierIDMeta;
+    side = 0;
+    break;
+
+  case kKeyMeta_R:
+    id2 = kKeyModifierIDMeta;
+    side = 1;
+    break;
+
+  case kKeySuper_L:
+    id2 = kKeyModifierIDSuper;
+    side = 0;
+    break;
+
+  case kKeySuper_R:
+    id2 = kKeyModifierIDSuper;
+    side = 1;
+    break;
+
+  default:
+    break;
+  }
+
+  if (id2 != kKeyModifierIDNull) {
+    return s_translationTable[m_modifierTranslationTable[id2]][side];
+  } else {
+    return id;
+  }
+}
+
+KeyModifierMask ServerProxy::translateModifierMask(KeyModifierMask mask) const
+{
+  static const KeyModifierMask s_masks[kKeyModifierIDLast] = {0x0000,          KeyModifierShift, KeyModifierControl,
+                                                              KeyModifierAlt,  KeyModifierMeta,  KeyModifierSuper,
+                                                              KeyModifierAltGr};
+
+  KeyModifierMask newMask = mask & ~(KeyModifierShift | KeyModifierControl | KeyModifierAlt | KeyModifierMeta |
+                                     KeyModifierSuper | KeyModifierAltGr);
+  if ((mask & KeyModifierShift) != 0) {
+    newMask |= s_masks[m_modifierTranslationTable[kKeyModifierIDShift]];
+  }
+  if ((mask & KeyModifierControl) != 0) {
+    newMask |= s_masks[m_modifierTranslationTable[kKeyModifierIDControl]];
+  }
+  if ((mask & KeyModifierAlt) != 0) {
+    newMask |= s_masks[m_modifierTranslationTable[kKeyModifierIDAlt]];
+  }
+  if ((mask & KeyModifierAltGr) != 0) {
+    newMask |= s_masks[m_modifierTranslationTable[kKeyModifierIDAltGr]];
+  }
+  if ((mask & KeyModifierMeta) != 0) {
+    newMask |= s_masks[m_modifierTranslationTable[kKeyModifierIDMeta]];
+  }
+  if ((mask & KeyModifierSuper) != 0) {
+    newMask |= s_masks[m_modifierTranslationTable[kKeyModifierIDSuper]];
+  }
+  return newMask;
+}
+
+void ServerProxy::enter()
+{
+  // parse
+  int16_t x;
+  int16_t y;
+  uint16_t mask;
+  uint32_t seqNum;
+  ProtocolUtil::readf(m_stream, kMsgCEnter + 4, &x, &y, &seqNum, &mask);
+  LOG_VERBOSE("recv enter, %d,%d %d %04x", x, y, seqNum, mask);
+
+  // discard old compressed mouse motion, if any
+  m_compressMouse = false;
+  m_compressMouseRelative = false;
+  m_dxMouse = 0;
+  m_dyMouse = 0;
+  m_seqNum = seqNum;
+
+  int32_t xEnter = x;
+  int32_t yEnter = y;
+  if (m_localCursor && m_localCursorEdges) {
+    // The layout may have changed while away; a point beside a shorter monitor
+    // would otherwise be clamped by Windows onto whichever monitor is nearest.
+    m_localMonitors = localCursorMonitors();
+    m_localMonitorRefresh = std::chrono::steady_clock::now();
+    int32_t sx, sy, sw, sh;
+    m_client->getShape(sx, sy, sw, sh);
+    localCursorEntryPoint(xEnter, yEnter, sx, sy, sw, sh, m_localMonitors);
+    if (xEnter != x || yEnter != y)
+      LOG_DEBUG("moved enter position %d,%d onto monitor at %d,%d", x, y, xEnter, yEnter);
+  }
+
+  // forward
+  m_client->enter(xEnter, yEnter, seqNum, static_cast<KeyModifierMask>(mask), false);
+  stopLocalCursorTimer();
+  m_mouseMotion.reset();
+  m_localDx = 0;
+  m_localDy = 0;
+  m_localReported = false;
+  if (m_localCursor) {
+    // Sample on later pump turns: SendInput and LBM's hook run asynchronously.
+    m_localCursorTimer = m_events->newTimer(0.008, nullptr);
+    m_events->addHandler(EventTypes::Timer, m_localCursorTimer, [this](const auto &) { reportLocalCursor(); });
+  }
+}
+
+void ServerProxy::leave()
+{
+  // parse
+  LOG_VERBOSE("recv leave");
+
+  // send last mouse motion
+  flushCompressedMouse();
+
+  // forward
+  stopLocalCursorTimer();
+  m_client->leave();
+  m_macShortcutMapper.reset();
+}
+
+void ServerProxy::setClipboard()
+{
+  // parse
+  ClipboardID id;
+  uint32_t seq;
+
+  auto r = ClipboardChunk::assemble(
+      m_stream, m_clipboardDataCached, id, seq, m_clipboardChunkState, m_client->getMaximumClipboardReceiveSizeBytes()
+  );
+
+  if (r == TransferState::Started) {
+    size_t size = ClipboardChunk::getExpectedSize(m_clipboardChunkState);
+    LOG_DEBUG("receiving clipboard %d size=%zu", id, size);
+  } else if (r == TransferState::Finished) {
+    LOG_DEBUG("received clipboard %d size=%zu", id, m_clipboardDataCached.size());
+
+    // forward
+    Clipboard clipboard;
+    clipboard.unmarshall(m_clipboardDataCached, 0);
+    m_client->setClipboard(id, &clipboard);
+    m_clipboardDataCached.clear();
+    m_clipboardDataCached.shrink_to_fit();
+
+    LOG_INFO("clipboard was updated");
+  } else if (r == TransferState::Error) {
+    requestDisconnect("invalid clipboard data from server");
+  }
+}
+
+void ServerProxy::grabClipboard()
+{
+  // parse
+  ClipboardID id;
+  uint32_t seqNum;
+  ProtocolUtil::readf(m_stream, kMsgCClipboard + 4, &id, &seqNum);
+  LOG_DEBUG("recv grab clipboard %d", id);
+
+  // validate
+  if (id >= kClipboardEnd) {
+    return;
+  }
+
+  // forward
+  m_client->grabClipboard(id);
+}
+
+void ServerProxy::keyDown(uint16_t id, uint16_t mask, uint16_t button, const std::string &lang)
+{
+  flushCompressedMouse();
+  handleKeyEvent({MacShortcuts::Action::Down, id, mask, button, 1, lang});
+}
+
+void ServerProxy::keyRepeat(uint16_t id, uint16_t mask, uint16_t count, uint16_t button, const std::string &lang)
+{
+  flushCompressedMouse();
+  handleKeyEvent({MacShortcuts::Action::Repeat, id, mask, button, count, lang});
+}
+
+void ServerProxy::keyUp()
+{
+  // get mouse up to date
+  flushCompressedMouse();
+
+  // parse
+  uint16_t id;
+  uint16_t mask;
+  uint16_t button;
+  ProtocolUtil::readf(m_stream, kMsgDKeyUp + 4, &id, &mask, &button);
+  LOG_VERBOSE("recv key up id=0x%08x, mask=0x%04x, button=0x%04x", id, mask, button);
+
+  handleKeyEvent({MacShortcuts::Action::Up, id, mask, button});
+}
+
+void ServerProxy::handleKeyEvent(const MacShortcuts::KeyEvent &event)
+{
+  if (m_macShortcuts) {
+    for (const auto &mapped : m_macShortcutMapper.translate(event))
+      forwardKeyEvent(mapped);
+  } else {
+    forwardKeyEvent(event);
+  }
+}
+
+void ServerProxy::forwardKeyEvent(const MacShortcuts::KeyEvent &event)
+{
+  const auto id = translateKey(event.id);
+  const auto mask = translateModifierMask(event.mask);
+  switch (event.action) {
+  case MacShortcuts::Action::Down:
+    m_client->keyDown(id, mask, event.button, event.language);
+    break;
+  case MacShortcuts::Action::Repeat:
+    m_client->keyRepeat(id, mask, event.count, event.button, event.language);
+    break;
+  case MacShortcuts::Action::Up:
+    m_client->keyUp(id, mask, event.button);
+    break;
+  }
+}
+
+void ServerProxy::forwardPointerModifiers()
+{
+  if (m_macShortcuts)
+    for (const auto &event : m_macShortcutMapper.pointerModifiers())
+      forwardKeyEvent(event);
+}
+
+void ServerProxy::mouseDown()
+{
+  // get mouse up to date
+  flushCompressedMouse();
+
+  // parse
+  int8_t id;
+  ProtocolUtil::readf(m_stream, kMsgDMouseDown + 4, &id);
+  LOG_VERBOSE("recv mouse down id=%d", id);
+
+  // forward
+  forwardPointerModifiers();
+  m_client->mouseDown(static_cast<ButtonID>(id));
+}
+
+void ServerProxy::mouseUp()
+{
+  // get mouse up to date
+  flushCompressedMouse();
+
+  // parse
+  int8_t id;
+  ProtocolUtil::readf(m_stream, kMsgDMouseUp + 4, &id);
+  LOG_VERBOSE("recv mouse up id=%d", id);
+
+  // forward
+  forwardPointerModifiers();
+  m_client->mouseUp(static_cast<ButtonID>(id));
+}
+
+void ServerProxy::mouseMove()
+{
+  // parse
+  bool ignore;
+  int16_t x;
+  int16_t y;
+  ProtocolUtil::readf(m_stream, kMsgDMouseMove + 4, &x, &y);
+
+  // note if we should ignore the move
+  ignore = m_ignoreMouse;
+
+  // compress mouse motion events if more input follows
+  if (!ignore && !m_compressMouse && m_stream->isReady()) {
+    m_compressMouse = true;
+  }
+
+  // if compressing then ignore the motion but record it
+  if (m_compressMouse) {
+    m_compressMouseRelative = false;
+    ignore = true;
+    m_xMouse = x;
+    m_yMouse = y;
+    m_dxMouse = 0;
+    m_dyMouse = 0;
+  }
+  LOG_VERBOSE("recv mouse move %d,%d", x, y);
+
+  // forward
+  if (!ignore) {
+    m_client->mouseMove(x, y);
+  }
+}
+
+void ServerProxy::mouseRelativeMove()
+{
+  // parse
+  bool ignore;
+  int16_t dx;
+  int16_t dy;
+  ProtocolUtil::readf(m_stream, kMsgDMouseRelMove + 4, &dx, &dy);
+
+  // note if we should ignore the move
+  ignore = m_ignoreMouse;
+
+  // compress mouse motion events if more input follows
+  if (!ignore && !m_compressMouseRelative && m_stream->isReady()) {
+    m_compressMouseRelative = true;
+  }
+
+  // if compressing then ignore the motion but record it
+  if (m_compressMouseRelative) {
+    ignore = true;
+    m_dxMouse += dx;
+    m_dyMouse += dy;
+  }
+  LOG_VERBOSE("recv mouse relative move %d,%d", dx, dy);
+
+  // forward
+  if (!ignore) {
+    applyRelativeMotion(dx, dy);
+  }
+}
+
+void ServerProxy::mouseWheel()
+{
+  // get mouse up to date
+  flushCompressedMouse();
+
+  // parse
+  int16_t xDelta;
+  int16_t yDelta;
+  ProtocolUtil::readf(m_stream, kMsgDMouseWheel + 4, &xDelta, &yDelta);
+  LOG_VERBOSE("recv mouse wheel %+d,%+d", xDelta, yDelta);
+
+  // forward
+  forwardPointerModifiers();
+  m_client->mouseWheel(xDelta, yDelta);
+}
+
+void ServerProxy::screensaver()
+{
+  // parse
+  int8_t on;
+  ProtocolUtil::readf(m_stream, kMsgCScreenSaver + 4, &on);
+  LOG_VERBOSE("recv screen saver on=%d", on);
+
+  // forward
+  m_client->screensaver(on != 0);
+}
+
+void ServerProxy::resetOptions()
+{
+  // parse
+  LOG_VERBOSE("recv reset options");
+
+  // forward
+  m_client->resetOptions();
+
+  // reset keep alive
+  setKeepAliveRate(kKeepAliveRate);
+
+  // reset modifier translation table
+  for (KeyModifierID id = 0; id < kKeyModifierIDLast; ++id) {
+    m_modifierTranslationTable[id] = id;
+  }
+}
+
+void ServerProxy::setOptions()
+{
+  // parse
+  OptionsList options;
+  ProtocolUtil::readf(m_stream, kMsgDSetOptions + 4, &options);
+  LOG_VERBOSE("recv set options size=%d", options.size());
+
+  if (options.size() % 2 != 0) {
+    LOG_ERR("options are the incorrect size, can not process them");
+    return;
+  }
+
+  bool serverSupportsLocalCursor = false;
+  m_localCursorEdges = false;
+  bool serverSupportsNativeDrag = false;
+  bool serverSupportsRelay = false;
+  for (size_t i = 0; i < options.size(); i += 2) {
+    if (options[i] == kOptionFileRelay)
+      serverSupportsRelay = options[i + 1] == 1;
+    if (options[i] == kOptionNativeFileDrag)
+      serverSupportsNativeDrag = options[i + 1] == 1;
+    if (options[i] == kOptionLocalCursor)
+      serverSupportsLocalCursor = options[i + 1] == 1;
+    if (options[i] == kOptionLocalCursorEdges)
+      m_localCursorEdges = options[i + 1] == 1;
+  }
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+  const bool requested = Settings::value(Settings::Client::LocalCursor).toBool() ||
+                         Settings::value(Settings::Client::MouseSpeed).toDouble() != 1.0;
+  if (requested && !serverSupportsLocalCursor)
+    requestDisconnect("Local cursor positioning and client speed require the patched Deskflow server.");
+  const bool localCursor = serverSupportsLocalCursor && requested;
+#else
+  const bool localCursor = false;
+#endif
+  if (serverSupportsLocalCursor)
+    ProtocolUtil::writef(m_stream, kMsgDLocalCursor, localCursor ? 1 : 0);
+  if (localCursor != m_localCursor) {
+    m_localCursor = localCursor;
+    if (!m_localCursor)
+      stopLocalCursorTimer();
+    LOG_INFO("LittleBigMouse local cursor mode %s", m_localCursor ? "enabled" : "disabled");
+  }
+
+  if (NativeFileDrag::supported && Settings::value(Settings::Core::NativeFileDrag).toBool() &&
+      !serverSupportsNativeDrag)
+    requestDisconnect("Native file drag requires the patched Deskflow server.");
+  const bool nativeDrag =
+      NativeFileDrag::supported && serverSupportsNativeDrag && serverSupportsRelay &&
+      Settings::value(Settings::Core::NativeFileDrag).toBool();
+  if (serverSupportsNativeDrag)
+    ProtocolUtil::writef(m_stream, kMsgDNativeFileDragMode, nativeDrag ? 2 : 0);
+  if (nativeDrag != m_nativeFileDrag) {
+    m_nativeFileDrag = nativeDrag;
+    if (nativeDrag) {
+      const auto channel = m_nativeDragChannel;
+      auto send = [events = m_events, channel](const QCborMap &packet) {
+        events->addEvent(
+            Event(EventTypes::NativeFileDragOutgoing, channel.get(), new NativeFileDragEvent(packet, false, channel))
+        );
+      };
+      if constexpr (NativeFileDrag::supported)
+        NativeFileDrag::attach(QStringLiteral("server"), 0, false, send, send);
+    } else {
+      if constexpr (NativeFileDrag::supported)
+        NativeFileDrag::detach(QStringLiteral("server"));
+    }
+  }
+
+  // forward
+  m_client->setOptions(options);
+
+  // update modifier table
+  for (uint32_t i = 0, n = (uint32_t)options.size(); i < n; i += 2) {
+    KeyModifierID id = kKeyModifierIDNull;
+    if (options[i] == kOptionModifierMapForShift) {
+      id = kKeyModifierIDShift;
+    } else if (options[i] == kOptionModifierMapForControl) {
+      id = kKeyModifierIDControl;
+    } else if (options[i] == kOptionModifierMapForAlt) {
+      id = kKeyModifierIDAlt;
+    } else if (options[i] == kOptionModifierMapForAltGr) {
+      id = kKeyModifierIDAltGr;
+    } else if (options[i] == kOptionModifierMapForMeta) {
+      id = kKeyModifierIDMeta;
+    } else if (options[i] == kOptionModifierMapForSuper) {
+      id = kKeyModifierIDSuper;
+    } else if (options[i] == kOptionHeartbeat) {
+      // update keep alive
+      setKeepAliveRate(1.0e-3 * static_cast<double>(options[i + 1]));
+    }
+
+    if (id != kKeyModifierIDNull) {
+      m_modifierTranslationTable[id] = std::clamp<KeyModifierMask>(options[i + 1], 0, kKeyModifierIDLast - 1);
+      LOG_VERBOSE("modifier %d mapped to %d", id, m_modifierTranslationTable[id]);
+    }
+  }
+}
+
+void ServerProxy::applyRelativeMotion(int32_t dx, int32_t dy)
+{
+  const auto motion = m_mouseMotion.map(dx, dy);
+  if (motion.first == 0 && motion.second == 0)
+    return;
+  if (m_localCursor) {
+    m_localDx += motion.first;
+    m_localDy += motion.second;
+  }
+  m_client->mouseRelativeMove(motion.first, motion.second);
+}
+
+void ServerProxy::stopLocalCursorTimer()
+{
+  if (m_localCursorTimer != nullptr) {
+    m_events->removeHandler(EventTypes::Timer, m_localCursorTimer);
+    m_events->deleteTimer(m_localCursorTimer);
+    m_localCursorTimer = nullptr;
+  }
+}
+
+void ServerProxy::reportLocalCursor()
+{
+  int32_t x, y;
+  if (!m_client->getCursorPosForFeedback(x, y))
+    return;
+  // Each delta is reported once. Replaying a stale outward delta would switch
+  // computers when touch, the local mouse or an app later moves the cursor onto
+  // an exposed edge without the server's mouse pushing against it.
+  if (m_localReported && x == m_localX && y == m_localY && m_localDx == 0 && m_localDy == 0)
+    return;
+  const int32_t dx = m_localDx;
+  const int32_t dy = m_localDy;
+  m_localReported = true;
+  m_localX = x;
+  m_localY = y;
+  m_localDx = 0;
+  m_localDy = 0;
+  if (m_localCursorEdges) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - m_localMonitorRefresh >= std::chrono::seconds(1)) {
+      m_localMonitors = localCursorMonitors();
+      m_localMonitorRefresh = now;
+    }
+    const auto edges = localCursorExposedEdges(x, y, m_localMonitors);
+    if (edges >= 0) {
+      ProtocolUtil::writef(m_stream, kMsgDLocalCursorPositionEdges, m_seqNum, x, y, dx, dy, edges);
+      return;
+    }
+  }
+  ProtocolUtil::writef(m_stream, kMsgDLocalCursorPosition, m_seqNum, x, y, dx, dy);
+}
+
+void ServerProxy::queryInfo()
+{
+  ClientInfo info;
+  m_client->getShape(info.m_x, info.m_y, info.m_w, info.m_h);
+  m_client->getCursorPos(info.m_mx, info.m_my);
+  sendInfo(info);
+}
+
+void ServerProxy::infoAcknowledgment()
+{
+  LOG_VERBOSE("recv info acknowledgment");
+  m_ignoreMouse = false;
+}
