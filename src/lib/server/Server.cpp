@@ -16,6 +16,7 @@
 #include "deskflow/IPlatformComputer.h"
 #include "deskflow/LocalCursor.h"
 #include "deskflow/NativeFileDrag.h"
+#include "deskflow/NativeFileDragPlatform.h"
 #include "deskflow/WindowMirror.h"
 #include "deskflow/WindowMirrorRouting.h"
 #include "deskflow/OptionTypes.h"
@@ -1665,6 +1666,10 @@ void Server::onMouseDown(ButtonID id)
 void Server::onMouseUp(ButtonID id)
 {
   if (id == kButtonLeft) {
+#ifdef Q_OS_WIN
+    if (m_active == m_primaryClient)
+      NativeFileDragPlatform::releaseReceivedDrag();
+#endif
     m_leftButtonDown = false;
     if (m_fileDragState == FileDragState::Probing)
       cancelNativeFileDrag(QStringLiteral("Mouse released before the drag reached the other computer."));

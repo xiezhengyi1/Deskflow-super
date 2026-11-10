@@ -105,5 +105,14 @@ void probe(std::function<void(const QStringList &paths)> done);
 void releaseSourceDrag();
 // Starts a native drag of the promised files under the cursor while the button is held.
 // finished(true) means the files were dropped on a target that accepted them.
-void startPromiseDrag(std::shared_ptr<FileDragPromise> promise, std::function<void(bool dropped)> finished);
+void startPromiseDrag(
+    std::shared_ptr<FileDragPromise> promise, std::function<void(bool dropped)> finished, uint64_t inputSequence
+);
+#ifdef Q_OS_WIN
+// Input threads forward remote drag input to the active OLE message queue.
+uint64_t dragInputSequence();
+void moveReceivedDrag();
+bool releaseReceivedDrag();
+void cancelReceivedDrag();
+#endif
 } // namespace NativeFileDragPlatform

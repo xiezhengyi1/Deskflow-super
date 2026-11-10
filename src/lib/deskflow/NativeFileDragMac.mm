@@ -266,7 +266,7 @@ void NativeFileDragPlatform::releaseSourceDrag()
 }
 
 void NativeFileDragPlatform::startPromiseDrag(
-    std::shared_ptr<FileDragPromise> promise, std::function<void(bool)> finished
+    std::shared_ptr<FileDragPromise> promise, std::function<void(bool)> finished, uint64_t
 )
 {
   // deskflow-core starts as a background-only process without a window-server connection;

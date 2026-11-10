@@ -3,23 +3,27 @@
  * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
  */
 #include "NativeFileDragPlatform.h"
+#include "base/Log.h"
+#include <QApplication>
 #include <QCursor>
-#include <QDrag>
+#include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
-#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QGuiApplication>
 #include <QLabel>
 #include <QMimeData>
 #include <QPointer>
 #include <QScreen>
+#include <QScopeGuard>
+#include <QStyle>
 #include <QTimer>
-#include <QUrl>
-#include <QVariant>
 #include <QWidget>
 #include <Windows.h>
+#include <ShlObj.h>
+#include <wrl.h>
 #include <algorithm>
+#include <cstring>
 
 namespace {
 void sendTagged(INPUT *inputs, UINT count)
@@ -190,7 +194,7 @@ public:
     const auto percent = promise.total > 0 ? int(100.0 * double(promise.received()) / double(promise.total)) : 0;
     setText(QCoreApplication::translate("NativeFileDrag", "Receiving %n file(s) from the other computer... %1%", nullptr,
                                         static_cast<int>(promise.names.size()))
-                .arg(std::min(percent, 99)));
+                .arg((std::min)(percent, 99)));
     adjustSize();
     move(QCursor::pos() + QPoint(16, 16));
     show();
@@ -200,36 +204,83 @@ public:
 // Offers the staged files as a regular file drop (CF_HDROP), so any app accepts them. The paths
 // are handed out right away while hovering; when the drop target asks after the button was
 // released, the answer waits until every file has been received and verified.
-class PromisedFiles : public QMimeData
+std::atomic<HWND> receiveWindow{};
+std::atomic<bool> remoteReleased{false};
+std::atomic<uint64_t> inputSequence{0};
+
+using Microsoft::WRL::ClassicCom;
+using Microsoft::WRL::Make;
+using Microsoft::WRL::RuntimeClass;
+using Microsoft::WRL::RuntimeClassFlags;
+
+class PromisedFiles final : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IDataObject>
 {
 public:
   explicit PromisedFiles(std::shared_ptr<FileDragPromise> promise) : m_promise(std::move(promise))
   {
   }
-  QStringList formats() const override
+  HRESULT STDMETHODCALLTYPE QueryGetData(FORMATETC *format) override
   {
-    return {QStringLiteral("text/uri-list")};
-  }
-  bool hasFormat(const QString &mimeType) const override
-  {
-    return mimeType == QStringLiteral("text/uri-list");
+    return format->cfFormat == CF_HDROP && (format->tymed & TYMED_HGLOBAL) && format->dwAspect == DVASPECT_CONTENT
+               ? S_OK
+               : DV_E_FORMATETC;
   }
 
-protected:
-  QVariant retrieveData(const QString &mimeType, QMetaType type) const override
+  HRESULT STDMETHODCALLTYPE GetData(FORMATETC *format, STGMEDIUM *medium) override
   {
-    Q_UNUSED(type)
-    if (mimeType != QStringLiteral("text/uri-list"))
-      return {};
-    if (!NativeFileDragPlatform::leftButtonDown())
+    if (const auto result = QueryGetData(format); FAILED(result))
+      return result;
+    if (remoteReleased)
       waitForFiles();
     if (m_promise->state() == FileDragPromise::State::Failed)
-      return {};
-    QList<QVariant> urls;
-    for (const auto &path : m_promise->stagedPaths)
-      urls.append(QUrl::fromLocalFile(path));
-    return urls;
+      return E_ABORT;
+
+    std::wstring paths;
+    for (const auto &path : m_promise->stagedPaths) {
+      paths += QDir::toNativeSeparators(path).toStdWString();
+      paths.push_back(L'\0');
+    }
+    const auto size = (paths.size() + 1) * sizeof(wchar_t);
+    const auto data = GlobalAlloc(GMEM_MOVEABLE, sizeof(DROPFILES) + size);
+    if (!data)
+      return E_OUTOFMEMORY;
+    auto *drop = static_cast<DROPFILES *>(GlobalLock(data));
+    if (!drop) {
+      GlobalFree(data);
+      return E_OUTOFMEMORY;
+    }
+    *drop = {};
+    drop->pFiles = sizeof(DROPFILES);
+    drop->fWide = TRUE;
+    std::memcpy(drop + 1, paths.c_str(), size);
+    GlobalUnlock(data);
+    medium->tymed = TYMED_HGLOBAL;
+    medium->hGlobal = data;
+    medium->pUnkForRelease = nullptr;
+    return S_OK;
   }
+
+  HRESULT STDMETHODCALLTYPE EnumFormatEtc(DWORD direction, IEnumFORMATETC **formats) override
+  {
+    if (direction != DATADIR_GET)
+      return E_NOTIMPL;
+    const FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    return SHCreateStdEnumFmtEtc(1, &format, formats);
+  }
+
+  HRESULT STDMETHODCALLTYPE GetDataHere(FORMATETC *, STGMEDIUM *) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetCanonicalFormatEtc(FORMATETC *, FORMATETC *format) override
+  {
+    format->ptd = nullptr;
+    return E_NOTIMPL;
+  }
+  HRESULT STDMETHODCALLTYPE SetData(FORMATETC *, STGMEDIUM *, BOOL) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE DAdvise(FORMATETC *, DWORD, IAdviseSink *, DWORD *) override
+  {
+    return OLE_E_ADVISENOTSUPPORTED;
+  }
+  HRESULT STDMETHODCALLTYPE DUnadvise(DWORD) override { return OLE_E_ADVISENOTSUPPORTED; }
+  HRESULT STDMETHODCALLTYPE EnumDAdvise(IEnumSTATDATA **) override { return OLE_E_ADVISENOTSUPPORTED; }
 
 private:
   void waitForFiles() const
@@ -254,6 +305,68 @@ private:
 
   std::shared_ptr<FileDragPromise> m_promise;
 };
+
+class RemoteDropSource final : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IDropSource>
+{
+public:
+  explicit RemoteDropSource(std::shared_ptr<FileDragPromise> promise) : m_promise(std::move(promise))
+  {
+    m_preview.setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint | Qt::WindowTransparentForInput);
+    m_preview.setAttribute(Qt::WA_ShowWithoutActivating);
+    m_preview.setPixmap(QApplication::style()->standardIcon(QStyle::SP_FileIcon).pixmap(24, 24));
+  }
+
+  HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape, DWORD keys) override
+  {
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+    if (escape || m_promise->state() == FileDragPromise::State::Failed)
+      return DRAGDROP_S_CANCEL;
+    // Physical input stays untouched. Only the remote release ends this drag,
+    // after any queued movement carrying the held-button flag.
+    if (!remoteReleased || (keys & MK_LBUTTON))
+      return S_OK;
+    m_preview.hide();
+    return DRAGDROP_S_DROP;
+  }
+
+  HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override
+  {
+    if (!remoteReleased) {
+      m_preview.move(QCursor::pos() + QPoint(14, 16));
+      m_preview.show();
+    }
+    return DRAGDROP_S_USEDEFAULTCURSORS;
+  }
+
+private:
+  std::shared_ptr<FileDragPromise> m_promise;
+  QLabel m_preview;
+};
+
+void postDragPointer(HWND window, UINT message, WPARAM keys)
+{
+  POINT pos{};
+  GetCursorPos(&pos);
+  // Windows takes MSG.pt from lParam for posted mouse messages. OLE
+  // needs the screen point, not coordinates relative to the source window.
+  PostMessageW(window, message, keys, MAKELPARAM(pos.x, pos.y));
+}
+
+bool runPromiseDrag(const std::shared_ptr<FileDragPromise> &promise)
+{
+  if (FAILED(OleInitialize(nullptr)))
+    return false;
+  const auto ole = qScopeGuard([] { OleUninitialize(); });
+  const auto files = Make<PromisedFiles>(promise);
+  const auto source = Make<RemoteDropSource>(promise);
+  DWORD effect = DROPEFFECT_NONE;
+  NativeFileDragPlatform::moveReceivedDrag();
+  const auto result = DoDragDrop(files.Get(), source.Get(), DROPEFFECT_COPY, &effect);
+  const bool dropped = result == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY);
+  LOG_INFO("edge drag: Windows drop ended result=0x%08lx copied=%d left=%d",
+           static_cast<unsigned long>(result), dropped, NativeFileDragPlatform::leftButtonDown());
+  return dropped;
+}
 } // namespace
 
 bool NativeFileDragPlatform::leftButtonDown()
@@ -283,46 +396,46 @@ void NativeFileDragPlatform::releaseSourceDrag()
     catcher->claimDrop();
 }
 
+void NativeFileDragPlatform::moveReceivedDrag()
+{
+  if (const auto window = receiveWindow.load(); window && !remoteReleased)
+    postDragPointer(window, WM_MOUSEMOVE, MK_LBUTTON);
+}
+
+uint64_t NativeFileDragPlatform::dragInputSequence()
+{
+  return inputSequence.load();
+}
+
+bool NativeFileDragPlatform::releaseReceivedDrag()
+{
+  ++inputSequence;
+  if (const auto window = receiveWindow.load(); window && !remoteReleased.exchange(true)) {
+    postDragPointer(window, WM_LBUTTONUP, 0);
+    return true;
+  }
+  return false;
+}
+
+void NativeFileDragPlatform::cancelReceivedDrag()
+{
+  ++inputSequence;
+  if (const auto window = receiveWindow.load())
+    PostMessageW(window, WM_KEYDOWN, VK_ESCAPE, 0);
+}
+
 void NativeFileDragPlatform::startPromiseDrag(
-    std::shared_ptr<FileDragPromise> promise, std::function<void(bool)> finished
+    std::shared_ptr<FileDragPromise> promise, std::function<void(bool)> finished, uint64_t startSequence
 )
 {
-  auto *source = new QWidget(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
-  source->setAttribute(Qt::WA_ShowWithoutActivating);
-  source->setGeometry(QRect(QCursor::pos(), QSize(1, 1)));
-  source->show();
-  // The physical button is held on the other computer; press it here so the drag has a button.
-  sendButton(MOUSEEVENTF_LEFTDOWN);
-  auto begin = [source, promise, finished = std::move(finished)] {
-    auto *drag = new QDrag(source);
-    drag->setMimeData(new PromisedFiles(promise));
-    // Qt's Windows drag waits in GetMessage for a mouse message carrying the button state
-    // before it calls DoDragDrop. The press was injected for a cursor that is not moving, so
-    // that message may never come and the main thread blocks. Hand it one.
-    HWND target = GetCapture();
-    if (target == nullptr)
-      target = GetFocus();
-    if (target == nullptr)
-      target = reinterpret_cast<HWND>(source->winId());
-    POINT point;
-    GetCursorPos(&point);
-    ScreenToClient(target, &point);
-    PostMessageW(target, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(point.x, point.y));
-    const bool dropped = drag->exec(Qt::CopyAction, Qt::CopyAction) == Qt::CopyAction;
-    source->hide();
-    source->deleteLater();
-    finished(dropped);
-  };
-  // Start the drag only once Windows reports the injected press, or it would drop at once.
-  auto *wait = new QTimer(source);
-  auto elapsed = std::make_shared<QElapsedTimer>();
-  elapsed->start();
-  QObject::connect(wait, &QTimer::timeout, source, [wait, elapsed, begin = std::move(begin)] {
-    if (!leftButtonDown() && elapsed->elapsed() < 300)
-      return;
-    wait->stop();
-    wait->deleteLater();
-    begin();
-  });
-  wait->start(10);
+  if (receiveWindow.load()) {
+    finished(false);
+    return;
+  }
+  QWidget source;
+  remoteReleased = false;
+  receiveWindow = reinterpret_cast<HWND>(source.winId());
+  const bool dropped = dragInputSequence() == startSequence && runPromiseDrag(promise);
+  receiveWindow = nullptr;
+  finished(dropped);
 }

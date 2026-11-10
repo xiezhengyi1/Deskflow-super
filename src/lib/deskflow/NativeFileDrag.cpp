@@ -201,7 +201,7 @@ void handleOffer(const QString &peer, const QCborMap &packet)
   });
 }
 
-void handleStart(const QCborMap &packet)
+void handleStart(const QCborMap &packet, uint64_t inputSequence)
 {
   const auto id = packet.value(QStringLiteral("id")).toString();
   const auto it = transfers.find(id);
@@ -232,10 +232,10 @@ void handleStart(const QCborMap &packet)
     LOG_INFO("edge drag: the files were dropped on this computer");
     if (t->done)
       retire(id, kKeepStagedMs);
-  });
+  }, inputSequence);
 }
 
-void handleDragPacket(const QString &peer, const QCborMap &packet, bool trusted)
+void handleDragPacket(const QString &peer, const QCborMap &packet, bool trusted, uint64_t inputSequence)
 {
   const auto type = packet.value(QStringLiteral("type")).toString();
   const auto id = packet.value(QStringLiteral("id")).toString();
@@ -246,7 +246,7 @@ void handleDragPacket(const QString &peer, const QCborMap &packet, bool trusted)
   }
   if (type == "start") {
     if (trusted)
-      handleStart(packet);
+      handleStart(packet, inputSequence);
     return;
   }
   if (type == "offer") {
@@ -354,16 +354,21 @@ void NativeFileDrag::receive(const QString &peer, const QByteArray &bytes, bool 
 {
   if (!controller || bytes.size() > 2 * 1024 * 1024)
     return;
+#ifdef Q_OS_WIN
+  const auto inputSequence = NativeFileDragPlatform::dragInputSequence();
+#else
+  constexpr uint64_t inputSequence = 0;
+#endif
   QMetaObject::invokeMethod(
       controller,
-      [peer, bytes, trusted] {
+      [peer, bytes, trusted, inputSequence] {
         QCborParserError error;
         const auto value = QCborValue::fromCbor(bytes, &error);
         if (error.error != QCborError::NoError || !value.isMap() || !peers.contains(peer))
           return;
         const auto packet = value.toMap();
         if (packet.value(QStringLiteral("drag")).toBool()) {
-          handleDragPacket(peer, packet, trusted);
+          handleDragPacket(peer, packet, trusted, inputSequence);
           return;
         }
         if (packet.value(QStringLiteral("mirror")).toBool()) {
@@ -411,7 +416,7 @@ void NativeFileDragPlatform::probe(std::function<void(const QStringList &)> done
 void NativeFileDragPlatform::releaseSourceDrag()
 {
 }
-void NativeFileDragPlatform::startPromiseDrag(std::shared_ptr<FileDragPromise>, std::function<void(bool)> finished)
+void NativeFileDragPlatform::startPromiseDrag(std::shared_ptr<FileDragPromise>, std::function<void(bool)> finished, uint64_t)
 {
   finished(false);
 }

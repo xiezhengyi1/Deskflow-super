@@ -16,6 +16,7 @@
 #include "deskflow/ClipboardChunk.h"
 #include "deskflow/DeskflowException.h"
 #include "deskflow/NativeFileDrag.h"
+#include "deskflow/NativeFileDragPlatform.h"
 #include "deskflow/OptionTypes.h"
 #include "deskflow/ProtocolTypes.h"
 #include "deskflow/ProtocolUtil.h"
@@ -65,6 +66,9 @@ ServerProxy::ServerProxy(Client *client, deskflow::IStream *stream, IEventQueue 
 
 ServerProxy::~ServerProxy()
 {
+#ifdef Q_OS_WIN
+  NativeFileDragPlatform::cancelReceivedDrag();
+#endif
   stopLocalCursorTimer();
   m_events->removeHandler(EventTypes::NativeFileDragOutgoing, m_nativeDragChannel.get());
   if (m_nativeFileDrag)
@@ -591,6 +595,9 @@ void ServerProxy::leave()
   // forward
   stopLocalCursorTimer();
   m_client->leave();
+#ifdef Q_OS_WIN
+  NativeFileDragPlatform::cancelReceivedDrag();
+#endif
   m_macShortcutMapper.reset();
 }
 
@@ -643,6 +650,10 @@ void ServerProxy::grabClipboard()
 void ServerProxy::keyDown(uint16_t id, uint16_t mask, uint16_t button, const std::string &lang)
 {
   flushCompressedMouse();
+#ifdef Q_OS_WIN
+  if (id == kKeyEscape)
+    NativeFileDragPlatform::cancelReceivedDrag();
+#endif
   handleKeyEvent({MacShortcuts::Action::Down, id, mask, button, 1, lang});
 }
 
@@ -731,6 +742,10 @@ void ServerProxy::mouseUp()
 
   // forward
   forwardPointerModifiers();
+#ifdef Q_OS_WIN
+  if (id == kButtonLeft && NativeFileDragPlatform::releaseReceivedDrag())
+    return;
+#endif
   m_client->mouseUp(static_cast<ButtonID>(id));
 }
 

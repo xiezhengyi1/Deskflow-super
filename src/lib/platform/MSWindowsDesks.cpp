@@ -15,6 +15,7 @@
 #include "base/TMethodJob.h"
 #include "deskflow/DisplayException.h"
 #include "deskflow/IScreenSaver.h"
+#include "deskflow/NativeFileDragPlatform.h"
 #include "deskflow/win32/AppUtilWindows.h"
 #include "mt/Lock.h"
 #include "mt/Thread.h"
@@ -767,10 +768,12 @@ void MSWindowsDesks::deskThread(const void *vdesk)
 
     case DESKFLOW_MSG_FAKE_MOVE:
       deskMouseMove(static_cast<int32_t>(msg.wParam), static_cast<int32_t>(msg.lParam));
+      NativeFileDragPlatform::moveReceivedDrag();
       break;
 
     case DESKFLOW_MSG_FAKE_REL_MOVE:
       deskMouseRelativeMove(static_cast<int32_t>(msg.wParam), static_cast<int32_t>(msg.lParam));
+      NativeFileDragPlatform::moveReceivedDrag();
       break;
 
     case DESKFLOW_MSG_FAKE_WHEEL:

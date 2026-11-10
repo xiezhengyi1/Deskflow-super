@@ -100,6 +100,7 @@ add_library(${lib_name} STATIC ${PLATFORM_CODE}
 
 if(WIN32)
   target_sources(${lib_name} PRIVATE NativeFileDragWindows.cpp WindowMirrorStub.cpp)
+  target_link_libraries(${lib_name} PRIVATE ole32 shell32)
 elseif(APPLE)
   target_sources(${lib_name} PRIVATE NativeFileDragMac.mm WindowMirrorMac.mm)
   target_link_libraries(${lib_name} PRIVATE
