@@ -8,6 +8,7 @@
 
 #include "platform/OSXComputer.h"
 #include "deskflow/NativeFileDragPlatform.h"
+#include "deskflow/WindowMirrorRouting.h"
 
 #include "arch/Arch.h"
 #include "arch/ArchException.h"
@@ -38,6 +39,7 @@
 #include <AppKit/NSPasteboard.h>
 #include <AvailabilityMacros.h>
 #include <cmath>
+#include <set>
 #include <IOKit/hidsystem/event_status_driver.h>
 #include <dispatch/dispatch.h>
 #include <libproc.h>
@@ -1697,12 +1699,48 @@ OSXComputer::handleCGInputEventSecondary(CGEventTapProxy proxy, CGEventType type
   return event;
 }
 
+namespace {
+// Whether a key event belongs to the Mac app whose window is mirrored on the other computer.
+// A key goes where its press went, so a release never lands on the other side.
+bool keyGoesToMirroredWindow(CGEventType type, CGEventRef event)
+{
+  static std::set<int64_t> passed;
+  const int64_t key = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+  bool down = type == kCGEventKeyDown;
+  if (type == kCGEventFlagsChanged) {
+    CGEventFlags mask = 0;
+    switch (key) {
+    case 56: case 60: mask = kCGEventFlagMaskShift; break;
+    case 59: case 62: mask = kCGEventFlagMaskControl; break;
+    case 58: case 61: mask = kCGEventFlagMaskAlternate; break;
+    case 55: case 54: mask = kCGEventFlagMaskCommand; break;
+    case 63: mask = kCGEventFlagMaskSecondaryFn; break;
+    default: break;
+    }
+    down = mask != 0 && (CGEventGetFlags(event) & mask) != 0;
+  }
+  if (!down)
+    return passed.erase(key) > 0;
+  if (passed.count(key))
+    return true; // auto-repeat of a key already going to the Mac app
+  if (!WindowMirrorRouting::keyboardToMac)
+    return false;
+  passed.insert(key);
+  return true;
+}
+} // namespace
+
 // Quartz event tap support
 CGEventRef OSXComputer::handleCGInputEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon)
 {
   if (CGEventGetIntegerValueField(event, kCGEventSourceUserData) == kNativeFileDragInputTag)
     return event;
   OSXComputer *computer = (OSXComputer *)refcon;
+  // Typing into a window mirrored on the other computer: let the key reach the (frontmost)
+  // Mac app directly instead of sending it across.
+  if ((type == kCGEventKeyDown || type == kCGEventKeyUp || type == kCGEventFlagsChanged) &&
+      !computer->m_isOnComputer && keyGoesToMirroredWindow(type, event))
+    return event;
 
   switch (type) {
   case kCGEventLeftMouseDown:

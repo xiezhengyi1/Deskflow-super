@@ -16,6 +16,8 @@
 #include "deskflow/IPlatformComputer.h"
 #include "deskflow/LocalCursor.h"
 #include "deskflow/NativeFileDrag.h"
+#include "deskflow/WindowMirror.h"
+#include "deskflow/WindowMirrorRouting.h"
 #include "deskflow/OptionTypes.h"
 #include "deskflow/PacketStreamFilter.h"
 #include "deskflow/ProtocolTypes.h"
@@ -28,6 +30,7 @@
 #include "server/ClientProxyUnknown.h"
 #include "server/PrimaryClient.h"
 #include <QCborValue>
+#include <QUuid>
 
 #ifdef _WIN32
 #include <algorithm>
@@ -369,8 +372,6 @@ bool Server::isLockedToComputerServer() const
 
 bool Server::isLockedToComputer() const
 {
-  if (m_fileDragPeer != nullptr)
-    return true;
   if (m_disableLockToComputer) {
     return false;
   }
@@ -861,6 +862,15 @@ bool Server::isSwitchOkay(
     }
   }
 
+  // Holding the left button at an edge towards a drag-capable neighbor: find out whether
+  // files are being dragged before applying the normal lock rules.
+  if (!preventSwitch && m_leftButtonDown && m_fileDragState != FileDragState::Declined &&
+      canEdgeFileDrag(m_active, newComputer)) {
+    if (m_fileDragState == FileDragState::Idle)
+      probeEdgeFileDrag(newComputer, x, y, dir);
+    return false;
+  }
+
   // ignore if mouse is locked to computer and don't try to switch later
   if (!preventSwitch && isLockedToComputer()) {
     LOG_VERBOSE("locked to computer");
@@ -1084,6 +1094,10 @@ void Server::sendOptions(BaseClientProxy *client) const
   optionsList.push_back(kOptionFileRelay);
   optionsList.push_back(NativeFileDrag::supported ? 1 : 0);
   optionsList.push_back(kOptionNativeFileDrag);
+  optionsList.push_back(NativeFileDrag::supported ? 1 : 0);
+  optionsList.push_back(kOptionEdgeFileDrag);
+  optionsList.push_back(NativeFileDrag::supported ? 1 : 0);
+  optionsList.push_back(kOptionWindowMirror);
   optionsList.push_back(NativeFileDrag::supported ? 1 : 0);
   optionsList.push_back(kOptionLocalCursorEdges);
   optionsList.push_back(1);
@@ -1312,14 +1326,18 @@ void Server::handleClientDisconnected(BaseClientProxy *client)
           QString::fromStdString(client->getName()),
           QCborValue(
               QCborMap{
+                  {QStringLiteral("drag"), true},
                   {QStringLiteral("type"), QStringLiteral("cancel")},
                   {QStringLiteral("id"), m_fileDragId},
                   {QStringLiteral("reason"), QStringLiteral("Peer disconnected.")}
               }
-          ).toCbor()
+          ).toCbor(),
+          true
       );
+    m_fileDragState = FileDragState::Idle;
     m_fileDragPeer = nullptr;
     m_fileDragSource = nullptr;
+    m_fileDragTarget = nullptr;
     m_fileDragId.clear();
   }
   // client has disconnected.  it might be an old client or an
@@ -1626,10 +1644,19 @@ void Server::onKeyRepeat(KeyID id, KeyModifierMask mask, int32_t count, KeyButto
 
 void Server::onMouseDown(ButtonID id)
 {
-  if (id == kButtonLeft)
+  if (id == kButtonLeft) {
     m_leftButtonDown = true;
+    m_fileDragState = FileDragState::Idle;
+    if (m_active == m_primaryClient)
+      if constexpr (NativeFileDrag::supported)
+        NativeFileDrag::noteLeftDown();
+  }
   LOG_VERBOSE("onMouseDown id=%d", id);
   assert(m_active != nullptr);
+  // Over a window mirrored from this Mac: the real window gets the press as well. The other
+  // computer still gets it, so the mirror window there activates.
+  if (m_active != m_primaryClient && WindowMirrorRouting::pointerInMirror)
+    WindowMirror::injectButton(id, true);
 
   // relay
   m_active->mouseDown(id);
@@ -1639,11 +1666,19 @@ void Server::onMouseUp(ButtonID id)
 {
   if (id == kButtonLeft) {
     m_leftButtonDown = false;
-    if (m_fileDragPeer != nullptr)
-      cancelNativeFileDrag(QStringLiteral("Mouse released before the files were staged."));
+    if (m_fileDragState == FileDragState::Probing)
+      cancelNativeFileDrag(QStringLiteral("Mouse released before the drag reached the other computer."));
+    // A drag in progress is dropped by this release on the target computer.
+    m_fileDragState = FileDragState::Idle;
+    m_fileDragPeer = nullptr;
+    m_fileDragSource = nullptr;
+    m_fileDragTarget = nullptr;
+    m_fileDragId.clear();
   }
   LOG_VERBOSE("onMouseUp id=%d", id);
   assert(m_active != nullptr);
+  if (m_active != m_primaryClient)
+    WindowMirror::injectButton(id, false); // ignored unless a mirrored window got the press
 
   // relay
   m_active->mouseUp(id);
@@ -1760,115 +1795,123 @@ void Server::configureNativeFileDrag(BaseClientProxy *client)
       NativeFileDrag::detach(peer);
     return;
   }
-  int localEdges = 0, remoteEdges = 0;
-  for (int side = 1; side <= 4; ++side) {
-    const auto direction = static_cast<Direction>(side);
-    if (m_config->getCanonicalName(m_config->getNeighbor(getName(m_primaryClient), direction, 0.5F, nullptr)) ==
-        getName(client))
-      localEdges |= 1 << side;
-    if (m_config->getCanonicalName(m_config->getNeighbor(getName(client), direction, 0.5F, nullptr)) ==
-        getName(m_primaryClient))
-      remoteEdges |= 1 << side;
-  }
   const auto channel = client->nativeDragChannel();
   auto send = [events = m_events, channel](const QCborMap &packet) {
     events->addEvent(
         Event(EventTypes::NativeFileDragOutgoing, channel.get(), new NativeFileDragEvent(packet, true, channel))
     );
   };
-  auto activate = [events = m_events, channel](const QCborMap &packet) {
-    events->addEvent(
-        Event(EventTypes::NativeFileDragActivate, channel.get(), new NativeFileDragEvent(packet, true, channel))
-    );
-  };
-  // The pending source is tracked by the server for both transfer directions.
   if constexpr (NativeFileDrag::supported)
-    NativeFileDrag::attach(peer, localEdges, true, send, activate);
-  sendNativeFileDrag(
-      client, QCborMap{{QStringLiteral("type"), QStringLiteral("config")}, {QStringLiteral("edges"), remoteEdges}}
+    NativeFileDrag::attach(peer, send);
+}
+
+bool Server::canEdgeFileDrag(const BaseClientProxy *from, const BaseClientProxy *to) const
+{
+  if constexpr (!NativeFileDrag::supported)
+    return false;
+  if (from == nullptr || to == nullptr || from == to || !Settings::value(Settings::Core::NativeFileDrag).toBool())
+    return false;
+  // Files travel between the server and one client; the server relays nothing else.
+  if (from == m_primaryClient)
+    return to->usesEdgeFileDrag();
+  if (to == m_primaryClient)
+    return from->usesEdgeFileDrag();
+  return false;
+}
+
+void Server::sendFileDragControl(BaseClientProxy *endpoint, const QCborMap &packet)
+{
+  if (endpoint == m_primaryClient) {
+    if constexpr (NativeFileDrag::supported)
+      NativeFileDrag::receive(QString::fromStdString(m_fileDragPeer->getName()), QCborValue(packet).toCbor(), true);
+  } else {
+    sendNativeFileDrag(endpoint, packet);
+  }
+}
+
+void Server::probeEdgeFileDrag(BaseClientProxy *target, int32_t x, int32_t y, Direction dir)
+{
+  m_fileDragState = FileDragState::Probing;
+  m_fileDragSource = m_active;
+  m_fileDragTarget = target;
+  m_fileDragPeer = m_active == m_primaryClient ? target : m_active;
+  m_fileDragId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  m_fileDragX = x;
+  m_fileDragY = y;
+  LOG_DEBUG("edge drag: asking \"%s\" for dragged files", getName(m_fileDragSource).c_str());
+  sendFileDragControl(
+      m_fileDragSource, QCborMap{
+                            {QStringLiteral("drag"), true},
+                            {QStringLiteral("type"), QStringLiteral("probe")},
+                            {QStringLiteral("id"), m_fileDragId},
+                            {QStringLiteral("edge"), static_cast<int>(dir)},
+                            // Only offer windows to a client that can show them.
+                            {QStringLiteral("windows"), m_fileDragSource == m_primaryClient && target->usesWindowMirror()}
+                        }
   );
 }
 
 void Server::handleNativeFileDragStarted(const Event &event, BaseClientProxy *client)
 {
   const auto &data = *static_cast<const NativeFileDragEvent *>(event.getDataObject());
-  // Relay transfers are independent of pointer location and mouse button state.
-  if (data.packet.value(QStringLiteral("relay")).toBool()) return;
-  if (data.packet.value(QStringLiteral("type")).toString() == "cancel") {
-    if (client == m_fileDragPeer && data.packet.value(QStringLiteral("id")).toString() == m_fileDragId) {
-      m_fileDragPeer = nullptr;
-      m_fileDragSource = nullptr;
-      m_fileDragId.clear();
-    }
+  if (!data.packet.value(QStringLiteral("drag")).toBool() || client != m_fileDragPeer ||
+      data.packet.value(QStringLiteral("id")).toString() != m_fileDragId)
+    return;
+  // Only the computer we probed may answer.
+  const auto *from = data.localSource ? m_primaryClient : client;
+  if (from != m_fileDragSource)
+    return;
+  const auto type = data.packet.value(QStringLiteral("type")).toString();
+  if (m_fileDragState != FileDragState::Probing) {
     return;
   }
-  m_fileDragPeer = client;
-  m_fileDragSource = data.localSource ? m_primaryClient : client;
-  m_fileDragId = data.packet.value(QStringLiteral("id")).toString();
-  if (m_active != m_fileDragSource || !m_leftButtonDown)
+  if (type == "none" || type == "cancel") {
+    LOG_DEBUG("edge drag: no files dragged on \"%s\"", getName(m_fileDragSource).c_str());
+    m_fileDragState = FileDragState::Declined;
+    return;
+  }
+  if (type != "offer" && type != "window")
+    return;
+  if (m_active != m_fileDragSource || !m_leftButtonDown) {
     cancelNativeFileDrag(QStringLiteral("The source computer is no longer dragging."));
+    return;
+  }
+  LOG_INFO(
+      "edge drag: moving dragged files from \"%s\" to \"%s\"", getName(m_fileDragSource).c_str(),
+      getName(m_fileDragTarget).c_str()
+  );
+  m_fileDragState = FileDragState::Dragging;
+  auto *target = m_fileDragTarget;
+  switchComputer(target, m_fileDragX, m_fileDragY, false);
+  // The target starts its native drag under the cursor; the held button now drags there.
+  sendFileDragControl(
+      target, QCborMap{
+                  {QStringLiteral("drag"), true},
+                  {QStringLiteral("type"), QStringLiteral("start")},
+                  {QStringLiteral("id"), m_fileDragId}
+              }
+  );
 }
 
 void Server::cancelNativeFileDrag(const QString &reason)
 {
+  if (m_fileDragPeer == nullptr)
+    return;
   const QCborMap packet{
+      {QStringLiteral("drag"), true},
       {QStringLiteral("type"), QStringLiteral("cancel")},
       {QStringLiteral("id"), m_fileDragId},
       {QStringLiteral("reason"), reason}
   };
+  // Both ends may hold state for this id: the source a sending session, the target staged files.
   sendNativeFileDrag(m_fileDragPeer, packet);
   if constexpr (NativeFileDrag::supported)
-    NativeFileDrag::receive(QString::fromStdString(m_fileDragPeer->getName()), QCborValue(packet).toCbor());
+    NativeFileDrag::receive(QString::fromStdString(m_fileDragPeer->getName()), QCborValue(packet).toCbor(), true);
+  m_fileDragState = FileDragState::Declined;
   m_fileDragPeer = nullptr;
   m_fileDragSource = nullptr;
+  m_fileDragTarget = nullptr;
   m_fileDragId.clear();
-}
-
-void Server::handleNativeFileDragActivate(const Event &event, BaseClientProxy *client)
-{
-  const auto &data = *static_cast<const NativeFileDragEvent *>(event.getDataObject());
-  const auto id = data.packet.value(QStringLiteral("id")).toString();
-  if (client != m_fileDragPeer || id != m_fileDragId || !m_leftButtonDown || m_active != m_fileDragSource)
-    return;
-  const bool localSource = m_fileDragSource == m_primaryClient;
-  BaseClientProxy *destination = localSource ? client : m_primaryClient;
-  int32_t x = static_cast<int32_t>(data.packet.value(QStringLiteral("x")).toInteger());
-  int32_t y = static_cast<int32_t>(data.packet.value(QStringLiteral("y")).toInteger());
-  int32_t ax, ay, width, height;
-  m_fileDragSource->getShape(ax, ay, width, height);
-  const auto side = static_cast<Direction>(data.packet.value(QStringLiteral("edge")).toInteger());
-  switch (side) {
-  case Direction::Left:
-    x = ax - 1;
-    break;
-  case Direction::Right:
-    x = ax + width;
-    break;
-  case Direction::Top:
-    y = ay - 1;
-    break;
-  case Direction::Bottom:
-    y = ay + height;
-    break;
-  default:
-    cancelNativeFileDrag(QStringLiteral("Invalid drag edge."));
-    return;
-  }
-  if (mapToNeighbor(m_fileDragSource, side, x, y) != destination) {
-    cancelNativeFileDrag(QStringLiteral("The target is not connected on this edge."));
-    return;
-  }
-  // The source's OLE/Cocoa drag has been cancelled. Transfer its held-button gesture
-  // to the destination only after complete, verified files exist there.
-  m_fileDragPeer = nullptr;
-  m_fileDragSource = nullptr;
-  m_fileDragId.clear();
-  switchComputer(destination, x, y, false);
-  const QCborMap packet{{QStringLiteral("type"), QStringLiteral("start")}, {QStringLiteral("id"), id}};
-  if (localSource)
-    sendNativeFileDrag(client, packet);
-  else if constexpr (NativeFileDrag::supported)
-    NativeFileDrag::receive(QString::fromStdString(client->getName()), QCborValue(packet).toCbor());
 }
 
 void Server::handleLocalCursorPosition(const Event &event, BaseClientProxy *client)
@@ -2081,6 +2124,10 @@ void Server::onMouseWheel(int32_t xDelta, int32_t yDelta)
 {
   LOG_VERBOSE("onMouseWheel %+d,%+d", xDelta, yDelta);
   assert(m_active != nullptr);
+  if (m_active != m_primaryClient && WindowMirrorRouting::pointerInMirror) {
+    WindowMirror::injectWheel(xDelta, yDelta);
+    return;
+  }
 
   // relay
   m_active->mouseWheel(xDelta, yDelta);
@@ -2100,10 +2147,6 @@ bool Server::addClient(BaseClientProxy *client)
   m_events->addHandler(
       EventTypes::NativeFileDragStarted, client->nativeDragChannel().get(),
       [this, client](const auto &event) { handleNativeFileDragStarted(event, client); }
-  );
-  m_events->addHandler(
-      EventTypes::NativeFileDragActivate, client->nativeDragChannel().get(),
-      [this, client](const auto &event) { handleNativeFileDragActivate(event, client); }
   );
   m_events->addHandler(
       EventTypes::ClientProxyLocalCursorPosition, client->getEventTarget(),
@@ -2147,7 +2190,6 @@ bool Server::removeClient(BaseClientProxy *client)
   // remove event handlers
   m_events->removeHandler(NativeFileDragMode, client->getEventTarget());
   m_events->removeHandler(NativeFileDragStarted, client->nativeDragChannel().get());
-  m_events->removeHandler(NativeFileDragActivate, client->nativeDragChannel().get());
   m_events->removeHandler(ClientProxyLocalCursorPosition, client->getEventTarget());
   m_events->removeHandler(ComputerShapeChanged, client->getEventTarget());
   m_events->removeHandler(ClipboardGrabbed, client->getEventTarget());

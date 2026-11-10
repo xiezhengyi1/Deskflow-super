@@ -9,6 +9,7 @@
 #include <QWidget>
 #include <functional>
 #include <memory>
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QListWidget;
@@ -34,6 +35,17 @@ public:
   {
     return m_savedFiles;
   }
+  // Accept offers from connected computers without a click. Connected peers are already TLS-authenticated.
+  void setAutoAccept(bool enabled);
+  bool autoAccept() const
+  {
+    return m_autoAcceptEnabled;
+  }
+
+Q_SIGNALS:
+  void autoAcceptChanged(bool enabled);
+  // Emitted when a transfer ends; savedPaths is non-empty only for successfully received files.
+  void transferFinished(const QString &message, bool success, const QStringList &savedPaths);
 
 protected:
   void dragEnterEvent(QDragEnterEvent *event) override;
@@ -54,6 +66,7 @@ private:
   bool busy() const;
   QMap<QString, Sender> m_peers;
   QComboBox *m_peer;
+  QCheckBox *m_autoAccept;
   QListWidget *m_outgoing;
   QListWidget *m_received;
   QLabel *m_status;
@@ -76,4 +89,6 @@ private:
   qint64 m_done = 0;
   bool m_active = false;
   bool m_autoSend = false;
+  bool m_autoAcceptEnabled = true;
+  QStringList m_lastSaved;
 };

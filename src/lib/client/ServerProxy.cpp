@@ -256,7 +256,7 @@ ServerProxy::ConnectionResult ServerProxy::parseMessage(const uint8_t *code)
     if (!m_nativeFileDrag)
       throw BadClientException("Native file drag is not enabled");
     if constexpr (NativeFileDrag::supported)
-      NativeFileDrag::receive(QStringLiteral("server"), QByteArray::fromStdString(bytes));
+      NativeFileDrag::receive(QStringLiteral("server"), QByteArray::fromStdString(bytes), true);
   } else if (memcmp(code, kMsgDMouseMove, 4) == 0) {
     mouseMove();
   }
@@ -710,6 +710,9 @@ void ServerProxy::mouseDown()
   int8_t id;
   ProtocolUtil::readf(m_stream, kMsgDMouseDown + 4, &id);
   LOG_VERBOSE("recv mouse down id=%d", id);
+  if (m_nativeFileDrag && id == kButtonLeft)
+    if constexpr (NativeFileDrag::supported)
+      NativeFileDrag::noteLeftDown();
 
   // forward
   forwardPointerModifiers();
@@ -854,11 +857,17 @@ void ServerProxy::setOptions()
   m_localCursorEdges = false;
   bool serverSupportsNativeDrag = false;
   bool serverSupportsRelay = false;
+  bool serverSupportsEdgeDrag = false;
+  bool serverSupportsWindowMirror = false;
   for (size_t i = 0; i < options.size(); i += 2) {
     if (options[i] == kOptionFileRelay)
       serverSupportsRelay = options[i + 1] == 1;
     if (options[i] == kOptionNativeFileDrag)
       serverSupportsNativeDrag = options[i + 1] == 1;
+    if (options[i] == kOptionEdgeFileDrag)
+      serverSupportsEdgeDrag = options[i + 1] == 1;
+    if (options[i] == kOptionWindowMirror)
+      serverSupportsWindowMirror = options[i + 1] == 1;
     if (options[i] == kOptionLocalCursor)
       serverSupportsLocalCursor = options[i + 1] == 1;
     if (options[i] == kOptionLocalCursorEdges)
@@ -888,8 +897,12 @@ void ServerProxy::setOptions()
   const bool nativeDrag =
       NativeFileDrag::supported && serverSupportsNativeDrag && serverSupportsRelay &&
       Settings::value(Settings::Core::NativeFileDrag).toBool();
-  if (serverSupportsNativeDrag)
-    ProtocolUtil::writef(m_stream, kMsgDNativeFileDragMode, nativeDrag ? 2 : 0);
+  if (serverSupportsNativeDrag) {
+    // 2 = file relay window, 3 = plus dragging files across the screen edge,
+    // 4 = plus showing windows dragged over from the server.
+    const uint8_t mode = !nativeDrag ? 0 : serverSupportsWindowMirror ? 4 : serverSupportsEdgeDrag ? 3 : 2;
+    ProtocolUtil::writef(m_stream, kMsgDNativeFileDragMode, mode);
+  }
   if (nativeDrag != m_nativeFileDrag) {
     m_nativeFileDrag = nativeDrag;
     if (nativeDrag) {
@@ -900,7 +913,7 @@ void ServerProxy::setOptions()
         );
       };
       if constexpr (NativeFileDrag::supported)
-        NativeFileDrag::attach(QStringLiteral("server"), 0, false, send, send);
+        NativeFileDrag::attach(QStringLiteral("server"), send);
     } else {
       if constexpr (NativeFileDrag::supported)
         NativeFileDrag::detach(QStringLiteral("server"));

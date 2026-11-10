@@ -32,7 +32,8 @@ void FileTransferSession::emitPacket(QCborMap packet)
 
 bool FileTransferSession::begin(const QStringList &paths, int edge, QPoint position)
 {
-  m_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  if (m_id.isEmpty())
+    m_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
   m_paths = paths;
   m_edge = edge;
   m_position = position;
@@ -230,19 +231,37 @@ QStringList FileTransferSession::saveReceivedFiles(const QString &directory, QSt
     return failSave(QStringLiteral("The received files have not passed verification."));
   if (!QDir().mkpath(directory))
     return failSave(QStringLiteral("Cannot create the receive folder."));
-  QTemporaryDir destination(QDir(directory).filePath(QStringLiteral("Transfer-XXXXXX")));
-  if (!destination.isValid())
-    return failSave(QStringLiteral("Cannot create a unique receive folder."));
+  const QDir destination(directory);
   QStringList paths;
   for (const auto &name : m_names) {
     const auto source = m_directory->filePath(name);
-    const auto target = destination.filePath(name);
-    if (!QFile::rename(source, target) && !QFile::copy(source, target))
+    const auto target = uniquePath(destination, name);
+    if (target.isEmpty() || (!QFile::rename(source, target) && !QFile::copy(source, target)))
       return failSave(QStringLiteral("Cannot save a received file."));
     paths.append(target);
   }
-  destination.setAutoRemove(false);
   return paths;
+}
+
+QString FileTransferSession::uniquePath(const QDir &directory, const QString &name)
+{
+  // "report.pdf" -> "report (1).pdf"; never overwrite an existing file.
+  const QFileInfo info(name);
+  auto suffix = info.completeSuffix();
+  auto base = suffix.isEmpty() ? name : name.left(name.size() - suffix.size() - 1);
+  if (base.isEmpty()) { // ".gitignore" -> ".gitignore (1)"
+    base = name;
+    suffix.clear();
+  }
+  for (int i = 0; i < 10000; ++i) {
+    const auto candidate = i == 0 ? name
+                                  : (suffix.isEmpty() ? QStringLiteral("%1 (%2)").arg(base).arg(i)
+                                                      : QStringLiteral("%1 (%2).%3").arg(base).arg(i).arg(suffix));
+    const auto path = directory.filePath(candidate);
+    if (!QFileInfo::exists(path))
+      return path;
+  }
+  return {};
 }
 
 QStringList FileTransferSession::receivedPaths() const

@@ -57,6 +57,7 @@
 #include <QRegularExpressionValidator>
 #include <QScreen>
 #include <QScrollBar>
+#include <QUrl>
 
 #include <memory>
 
@@ -110,6 +111,14 @@ MainWindow::MainWindow()
     }
     Settings::save();
   }
+  // Turn on cross-computer file transfer once for this version. It needs desktop mode on Windows.
+  if (!Settings::value(Settings::Gui::FileDragOnboarded).toBool()) {
+    Settings::setValue(Settings::Gui::FileDragOnboarded, true);
+    Settings::setValue(Settings::Core::NativeFileDrag, true);
+    if (deskflow::platform::isWindows())
+      Settings::setValue(Settings::Core::ProcessMode, Settings::ProcessMode::Desktop);
+    Settings::save();
+  }
   ui->setupUi(this);
   m_discovery = new ServerDiscovery(this);
   m_discovery->restoreClients(Settings::value(Settings::Gui::DiscoveryClients).toStringList());
@@ -120,6 +129,28 @@ MainWindow::MainWindow()
   });
   connect(m_discovery, &ServerDiscovery::serverFound, this, &MainWindow::discoveredServer);
   m_relayWindow = new FileRelayWindow(this);
+  m_relayWindow->setAutoAccept(Settings::value(Settings::Gui::FileAutoAccept).toBool());
+  connect(m_relayWindow, &FileRelayWindow::autoAcceptChanged, this, [](bool enabled) {
+    Settings::setValue(Settings::Gui::FileAutoAccept, enabled);
+    Settings::save();
+  });
+  connect(
+      m_relayWindow, &FileRelayWindow::transferFinished, this,
+      [this](const QString &message, bool success, const QStringList &saved) {
+        if (m_relayWindow->isVisible() || !QSystemTrayIcon::supportsMessages())
+          return;
+        if (!saved.isEmpty()) {
+          m_lastReceivedFolder = QFileInfo(saved.first()).absolutePath();
+          m_trayIcon->showMessage(tr("Files received"), message, QSystemTrayIcon::Information, 8000);
+        } else if (!success) {
+          m_trayIcon->showMessage(tr("File transfer"), message, QSystemTrayIcon::Warning, 8000);
+        }
+      }
+  );
+  connect(m_trayIcon, &QSystemTrayIcon::messageClicked, this, [this] {
+    if (!m_lastReceivedFolder.isEmpty())
+      QDesktopServices::openUrl(QUrl::fromLocalFile(m_lastReceivedFolder));
+  });
   connect(&m_coreProcess, &CoreProcess::fileRelayPeersReset, m_relayWindow, &FileRelayWindow::clearPeers);
   connect(&m_coreProcess, &CoreProcess::fileRelayPacketReceived, m_relayWindow, &FileRelayWindow::receive);
   connect(&m_coreProcess, &CoreProcess::fileRelayPeerChanged, this, [this](const QString &peer, bool connected) {

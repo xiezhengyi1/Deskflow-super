@@ -5,6 +5,7 @@
 #pragma once
 #include <QCborMap>
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
 #include <QPoint>
 #include <QSaveFile>
@@ -27,11 +28,16 @@ public:
   void receive(const QCborMap &packet);
   void cancel(const QString &reason);
   QStringList receivedPaths() const;
-  // Persist verified files in a unique folder; never overwrite existing files.
+  // Persist verified files into directory, renaming on collision; never overwrite existing files.
   QStringList saveReceivedFiles(const QString &directory, QString *error = nullptr);
   QString id() const
   {
     return m_id;
+  }
+  // Use a caller-chosen transfer id for the next begin() instead of a random one.
+  void setId(const QString &id)
+  {
+    m_id = id;
   }
   int edge() const
   {
@@ -50,6 +56,7 @@ public:
     return m_staged;
   }
   static bool validName(const QString &name);
+  static QString uniquePath(const QDir &directory, const QString &name);
 
 private:
   void nextChunk();

@@ -95,8 +95,8 @@
        </item>
        <item>
         <widget class="QCheckBox" name="cbNativeFileDrag">
-         <property name="text"><string>File relay between Windows and macOS</string></property>
-         <property name="toolTip"><string>Enable on both computers. Open File relay from the File menu, choose files and click Send. The other computer clicks Receive. Supports regular files and requires desktop mode on Windows.</string></property>
+         <property name="text"><string>File transfer between Windows and macOS</string></property>
+         <property name="toolTip"><string>Enable on both computers. Drag files across the screen edge and drop them on the other computer, or use File relay from the File menu. Supports regular files and requires desktop mode on Windows.</string></property>
         </widget>
        </item>
        <item>

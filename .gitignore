@@ -49,3 +49,7 @@ CMakeFiles/*
 # Ai helperfilers
 **/[cC]laude.[mM][dD]
 **/CLAUDE.[mM][dD]
+
+# local build output of the LBM fork
+/build-*/
+/build-*.log

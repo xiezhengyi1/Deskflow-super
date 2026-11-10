@@ -94,6 +94,8 @@ public:
     inline static const auto ShowVersionInTitle = QStringLiteral("gui/showVersionInTitle");
     inline static const auto IgnoreMissingKeyboardLayouts = QStringLiteral("gui/ignoreMissingKeyboardLayouts");
     inline static const auto SendToMenu = QStringLiteral("gui/sendToMenu");
+    inline static const auto FileAutoAccept = QStringLiteral("gui/fileAutoAccept");
+    inline static const auto FileDragOnboarded = QStringLiteral("gui/fileDragOnboarded");
   };
   struct Log
   {
@@ -333,6 +335,8 @@ private:
     , Gui::ShowVersionInTitle
     , Gui::IgnoreMissingKeyboardLayouts
     , Gui::SendToMenu
+    , Gui::FileAutoAccept
+    , Gui::FileDragOnboarded
     , Security::Certificate
     , Security::CheckPeers
     , Security::KeySize
@@ -365,6 +369,7 @@ private:
     , Gui::ShownServerFirstStartMessage
     , Gui::ShowVersionInTitle
     , Gui::IgnoreMissingKeyboardLayouts
+    , Gui::FileDragOnboarded
     , Core::PreventSleep
     , Core::NativeFileDrag
     , Core::EnableEnterCommand
@@ -395,6 +400,7 @@ private:
     , Gui::CloseToTray
     , Gui::CloseReminder
     , Gui::SendToMenu
+    , Gui::FileAutoAccept
     , Gui::LogExpanded
     , Gui::SymbolicTrayIcon
     , Security::TlsEnabled

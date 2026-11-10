@@ -4,6 +4,7 @@
  */
 #include "FileRelayWindow.h"
 #include <QCborArray>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDir>
@@ -21,6 +22,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <utility>
 #include <limits>
 
 namespace {
@@ -82,8 +84,8 @@ FileRelayWindow::FileRelayWindow(QWidget *parent) : QWidget(parent, Qt::Window)
   resize(640, 620);
   auto *layout = new QVBoxLayout(this);
   auto *help = new QLabel(
-      tr("Drop files here, then choose a connected computer and click Send.\nThe other computer accepts the transfer "
-         "in its relay window."),
+      tr("Tip: you can drag files straight across the screen edge to the other computer.\n"
+         "Or drop files here, choose a connected computer and click Send."),
       this
   );
   help->setWordWrap(true);
@@ -119,6 +121,16 @@ FileRelayWindow::FileRelayWindow(QWidget *parent) : QWidget(parent, Qt::Window)
     }
   });
   connect(m_send, &QPushButton::clicked, this, &FileRelayWindow::startSend);
+  m_autoAccept = new QCheckBox(tr("Receive files from connected computers automatically"), this);
+  m_autoAccept->setObjectName(QStringLiteral("autoAccept"));
+  m_autoAccept->setChecked(m_autoAcceptEnabled);
+  layout->addWidget(m_autoAccept);
+  connect(m_autoAccept, &QCheckBox::toggled, this, [this](bool checked) {
+    if (checked == m_autoAcceptEnabled)
+      return;
+    m_autoAcceptEnabled = checked;
+    Q_EMIT autoAcceptChanged(checked);
+  });
   m_request = new QLabel(this);
   m_request->setObjectName(QStringLiteral("incomingRequest"));
   m_request->setWordWrap(true);
@@ -200,6 +212,11 @@ FileRelayWindow::FileRelayWindow(QWidget *parent) : QWidget(parent, Qt::Window)
   updateControls();
 }
 
+void FileRelayWindow::setAutoAccept(bool enabled)
+{
+  m_autoAcceptEnabled = enabled;
+  m_autoAccept->setChecked(enabled);
+}
 bool FileRelayWindow::busy() const
 {
   return m_active || !m_pendingOffer.isEmpty();
@@ -355,6 +372,7 @@ void FileRelayWindow::setupSession(const QString &peer)
         return;
       }
       m_savedFiles.append(paths);
+      m_lastSaved = paths;
       for (const auto &path : paths) {
         auto *item = new QListWidgetItem(QFileInfo(path).fileName(), m_received);
         item->setToolTip(path);
@@ -362,7 +380,10 @@ void FileRelayWindow::setupSession(const QString &peer)
       }
       transmit(peer, packet);
       finish(
-          tr("Received %1 file(s). Saved to %2").arg(paths.size()).arg(QFileInfo(paths.first()).absolutePath()), true
+          tr("Received %1 file(s). Saved to %2")
+              .arg(paths.size())
+              .arg(QDir::toNativeSeparators(QFileInfo(paths.first()).absolutePath())),
+          true
       );
       return;
     }
@@ -391,7 +412,7 @@ void FileRelayWindow::startSend()
   if (paths.isEmpty())
     return;
   setupSession(m_peer->currentText());
-  m_status->setText(tr("Waiting for the other computer to click Receive..."));
+  m_status->setText(tr("Waiting for the other computer..."));
   m_progress->setValue(0);
   m_session->begin(paths, 1, {});
 }
@@ -437,6 +458,8 @@ void FileRelayWindow::finish(const QString &message, bool success)
   if (success)
     m_progress->setValue(100);
   updateControls();
+  const auto saved = std::exchange(m_lastSaved, {});
+  Q_EMIT transferFinished(message, success, success ? saved : QStringList{});
 }
 void FileRelayWindow::updateProgress()
 {
@@ -461,6 +484,11 @@ void FileRelayWindow::receive(const QString &name, const QCborMap &packet)
     }
     m_pendingOffer = packet;
     m_pendingPeer = name;
+    if (m_autoAcceptEnabled) {
+      // Receive in the background; the result is reported through transferFinished.
+      acceptOffer();
+      return;
+    }
     m_request->setText(tr("%1 wants to send %2 file(s), %3 bytes. Click Receive to save them.")
                            .arg(name)
                            .arg(files.size())

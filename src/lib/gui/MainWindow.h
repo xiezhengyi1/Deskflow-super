@@ -197,6 +197,7 @@ private:
   QString m_peerFingerprint;
   QElapsedTimer m_discoveryRestart;
   FileRelayWindow *m_relayWindow = nullptr;
+  QString m_lastReceivedFolder;
   LogDock *m_logDock;
   StatusBar *m_statusBar = nullptr;
 

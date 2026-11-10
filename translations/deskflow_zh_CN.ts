@@ -497,6 +497,14 @@ Do you want to connect to the server?
 <context>
     <name>MainWindow</name>
     <message>
+        <source>Files received</source>
+        <translation>已收到文件</translation>
+    </message>
+    <message>
+        <source>File transfer</source>
+        <translation>文件传输</translation>
+    </message>
+    <message>
         <source>This computer&apos;s name:</source>
         <translation>此计算机名称：</translation>
     </message>
@@ -1348,12 +1356,12 @@ Enabling this setting will disable the server config GUI.</source>
         <translation>两台电脑都需启用。按住鼠标等待文件传完，再拖放到资源管理器或 Finder。复制普通文件，不支持文件夹；Windows 需使用桌面模式。</translation>
     </message>
     <message>
-        <source>File relay between Windows and macOS</source>
-        <translation>Windows 与 macOS 文件中继</translation>
+        <source>File transfer between Windows and macOS</source>
+        <translation>Windows 与 macOS 文件传输</translation>
     </message>
     <message>
-        <source>Enable on both computers. Open File relay from the File menu, choose files and click Send. The other computer clicks Receive. Supports regular files and requires desktop mode on Windows.</source>
-        <translation>请在两端启用。在“文件”菜单打开“文件中继”，选择文件并点击“发送”，对端点击“接收”。支持普通文件，Windows 需要桌面模式。</translation>
+        <source>Enable on both computers. Drag files across the screen edge and drop them on the other computer, or use File relay from the File menu. Supports regular files and requires desktop mode on Windows.</source>
+        <translation>请在两端启用。按住文件拖过屏幕边缘，直接放到另一台电脑上；也可使用“文件”菜单中的“文件中继”。支持普通文件，Windows 需要桌面模式。</translation>
     </message>
 </context>
 <context>
@@ -1510,10 +1518,10 @@ Enabling this setting will disable the server config GUI.</source>
         <translation>文件中继</translation>
     </message>
     <message>
-        <source>Drop files here, then choose a connected computer and click Send.
-The other computer accepts the transfer in its relay window.</source>
-        <translation>将文件拖入此窗口，选择已连接的电脑，再点击“发送”。
-对端在中继窗口中点击“接收”即可保存。</translation>
+        <source>Tip: you can drag files straight across the screen edge to the other computer.
+Or drop files here, choose a connected computer and click Send.</source>
+        <translation>提示：可以直接把文件拖过屏幕边缘，放到另一台电脑上。
+也可以把文件拖入此窗口，选择已连接的电脑，再点击“发送”。</translation>
     </message>
     <message>
         <source>Send to:</source>
@@ -1600,8 +1608,12 @@ The other computer accepts the transfer in its relay window.</source>
         <translation>发送成功，对端已保存文件。</translation>
     </message>
     <message>
-        <source>Waiting for the other computer to click Receive...</source>
-        <translation>等待对端点击“接收”…</translation>
+        <source>Waiting for the other computer...</source>
+        <translation>等待对端…</translation>
+    </message>
+    <message>
+        <source>Receive files from connected computers automatically</source>
+        <translation>自动接收已连接电脑发来的文件</translation>
     </message>
     <message>
         <source>Receiving and verifying files...</source>

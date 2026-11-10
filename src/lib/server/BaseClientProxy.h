@@ -56,6 +56,12 @@ public:
 
   bool usesFileRelay() const { return m_fileRelay; }
   void setFileRelay(bool enabled) { m_fileRelay = enabled; }
+  // Client can hand over files dragged across the screen edge (file drag mode 3).
+  bool usesEdgeFileDrag() const { return m_edgeFileDrag; }
+  void setEdgeFileDrag(bool enabled) { m_edgeFileDrag = enabled; }
+  // Client can show windows dragged over from the server (file drag mode 4).
+  bool usesWindowMirror() const { return m_windowMirror; }
+  void setWindowMirror(bool enabled) { m_windowMirror = enabled; }
 
   bool usesNativeFileDrag() const
   {
@@ -113,6 +119,8 @@ private:
   bool m_localCursor = false;
   bool m_nativeFileDrag = false;
   bool m_fileRelay = false;
+  bool m_edgeFileDrag = false;
+  bool m_windowMirror = false;
   std::shared_ptr<int> m_nativeDragChannel = std::make_shared<int>(0);
   std::string m_name;
   int32_t m_x = 0;

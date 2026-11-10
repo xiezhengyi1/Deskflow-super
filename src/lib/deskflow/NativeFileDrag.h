@@ -37,7 +37,12 @@ public:
   static void create(QObject *parent);
   static void publishRelayPeers();
   static void sendRelayPacket(const QByteArray &envelope);
-  static void attach(const QString &peer, int edges, bool server, Sender send, Sender activate);
+  // A connected peer; send() delivers a packet to it over the authenticated Deskflow connection.
+  static void attach(const QString &peer, Sender send);
   static void detach(const QString &peer);
-  static void receive(const QString &peer, const QByteArray &bytes);
+  // A packet from or about peer. trusted is true for control packets that originate from
+  // this computer's own server logic (or, on a client, from the server it is bound to).
+  static void receive(const QString &peer, const QByteArray &bytes, bool trusted);
+  // The left button went down on this computer; any file drag starts after this point.
+  static void noteLeftDown();
 };

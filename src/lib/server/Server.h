@@ -42,6 +42,7 @@ This class implements the top-level server algorithms for deskflow.
 class Server
 {
   friend class LocalCursorTests;
+  friend struct EdgeDragFixture;
   using ServerConfig = deskflow::server::Config;
 
 public:
@@ -311,9 +312,13 @@ private:
   void handleLocalCursorPosition(const Event &event, BaseClientProxy *client);
   void configureNativeFileDrag(BaseClientProxy *client);
   void handleNativeFileDragStarted(const Event &event, BaseClientProxy *client);
-  void handleNativeFileDragActivate(const Event &event, BaseClientProxy *client);
   void cancelNativeFileDrag(const QString &reason);
   void sendNativeFileDrag(BaseClientProxy *client, const QCborMap &packet);
+  // Edge drag: the left button is held at an edge towards a neighbor. Ask the source computer
+  // whether it is dragging files; the cursor waits at the edge until it answers.
+  bool canEdgeFileDrag(const BaseClientProxy *from, const BaseClientProxy *to) const;
+  void probeEdgeFileDrag(BaseClientProxy *target, int32_t x, int32_t y, Direction dir);
+  void sendFileDragControl(BaseClientProxy *endpoint, const QCborMap &packet);
   void handleClipboardGrabbed(const Event &event, BaseClientProxy *client);
   void handleClipboardChanged(const Event &event, BaseClientProxy *client);
   void handleKeyDownEvent(const Event &event);
@@ -468,9 +473,20 @@ private:
   bool m_relativeMoves = false;
   MouseMotionMapper m_mouseMotion;
   bool m_leftButtonDown = false;
-  BaseClientProxy *m_fileDragPeer = nullptr;
-  BaseClientProxy *m_fileDragSource = nullptr;
+  enum class FileDragState
+  {
+    Idle,     // no drag decision for the current button press
+    Probing,  // waiting for the source computer to report dragged files
+    Declined, // not a file drag; normal switching rules apply until the button is released
+    Dragging  // files are being dragged on the target computer
+  };
+  FileDragState m_fileDragState = FileDragState::Idle;
+  BaseClientProxy *m_fileDragPeer = nullptr;   // the non-primary end of the drag
+  BaseClientProxy *m_fileDragSource = nullptr; // computer the files are dragged from
+  BaseClientProxy *m_fileDragTarget = nullptr; // computer the files are dragged to
   QString m_fileDragId;
+  int32_t m_fileDragX = 0;
+  int32_t m_fileDragY = 0;
 
   // flag whether or not we have broadcasting enabled and the computers to
   // which we should send broadcasted keys.

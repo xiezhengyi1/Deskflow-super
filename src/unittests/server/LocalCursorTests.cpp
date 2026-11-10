@@ -15,7 +15,10 @@
 #include "server/ClientProxy1_0.h"
 #include "server/PrimaryClient.h"
 #include "server/Server.h"
+#include "deskflow/NativeFileDrag.h"
+#include <QCborValue>
 #include <QTemporaryDir>
+#include <QtEndian>
 
 #include <QByteArray>
 #include <QTest>
@@ -180,8 +183,107 @@ public:
     x = 0;
     y = 0;
   }
+  int enters = 0;
+  int leaves = 0;
+  void enter(int32_t, int32_t, uint32_t, KeyModifierMask, bool) override
+  {
+    ++enters;
+  }
+  bool leave() override
+  {
+    ++leaves;
+    return true;
+  }
+  // The default config registers the lock-to-computer hotkey when locking is enabled.
+  uint32_t registerHotKey(KeyID, KeyModifierMask) override
+  {
+    return 1;
+  }
+  void unregisterHotKey(uint32_t) override
+  {
+  }
+  void getShape(int32_t &x, int32_t &y, int32_t &w, int32_t &h) const override
+  {
+    x = 0;
+    y = 0;
+    w = 1512;
+    h = 982;
+  }
 };
+
+// Reads every kMsgDNativeFileDrag packet the server wrote to a client, skipping other messages.
+QList<QCborMap> dragPackets(MemoryStream &stream)
+{
+  QList<QCborMap> packets;
+  QByteArray &bytes = stream.bytes;
+  const QByteArray code(kMsgDNativeFileDrag, 4);
+  for (qsizetype at = bytes.indexOf(code); at >= 0; at = bytes.indexOf(code, at + 1)) {
+    const auto size = qFromBigEndian<quint32>(bytes.constData() + at + 4);
+    packets.append(QCborValue::fromCbor(bytes.mid(at + 8, size)).toMap());
+  }
+  return packets;
+}
+
 } // namespace
+
+// Mac (server) below a Windows client with LittleBigMouse local cursor positions.
+struct EdgeDragFixture
+{
+  TestAppUtil app;
+  RecordingQueue events;
+  deskflow::server::Config config{&events};
+  TestPrimary primary;
+  MemoryStream *stream = new MemoryStream;
+  TestProxy windows{"windows", stream, &events};
+  std::unique_ptr<Server> server;
+  explicit EdgeDragFixture(bool disableLock)
+  {
+    Settings::setValue(Settings::Core::NativeFileDrag, true);
+    config.addComputer("mac");
+    config.addComputer("windows");
+    if (disableLock)
+      config.addOption("", kOptionDisableLockToComputer, 1);
+    config.addOption("", kOptionClipboardSharing, 0);
+    config.connect("windows", Direction::Bottom, 0, 1, "mac", 0, 1);
+    config.connect("mac", Direction::Top, 0, 1, "windows", 0, 1);
+    windows.shapeX = windows.shapeY = 0;
+    windows.shapeWidth = 1920;
+    windows.shapeHeight = 1080;
+    server = std::make_unique<Server>(config, &primary, reinterpret_cast<deskflow::Computer *>(0x1), &events);
+    server->addClient(&windows);
+    windows.setLocalCursor(true);
+    windows.setEdgeFileDrag(true);
+    server->m_active = &windows;
+    server->m_seqNum = 7;
+  }
+  ~EdgeDragFixture()
+  {
+    server->m_active = &primary;
+    server->removeClient(&windows);
+  }
+  // The edge decision the mouse-move handlers make; returns whether the server switched.
+  bool pushEdge(BaseClientProxy *target, Direction dir)
+  {
+    int32_t x = 960, y = dir == Direction::Bottom ? 0 : 1079;
+    if (!server->isSwitchOkay(target, dir, x, y, x, y))
+      return false;
+    server->switchComputer(target, x, y, false);
+    return true;
+  }
+  bool pushBottomEdge()
+  {
+    return pushEdge(&primary, Direction::Bottom);
+  }
+  void answer(const QString &type, const QString &id, bool fromMac = false)
+  {
+    NativeFileDragEvent data(
+        {{QStringLiteral("drag"), true}, {QStringLiteral("type"), type}, {QStringLiteral("id"), id}}, fromMac,
+        windows.nativeDragChannel()
+    );
+    Event event(EventTypes::NativeFileDragStarted, windows.nativeDragChannel().get(), &data);
+    server->handleNativeFileDragStarted(event, &windows);
+  }
+};
 
 class LocalCursorTests : public QObject
 {
@@ -463,6 +565,132 @@ private Q_SLOTS:
     ProtocolUtil::writef(stream, kMsgDLocalCursor, 0);
     QVERIFY(proxy.readMessage());
     QVERIFY(!proxy.usesLocalCursor());
+  }
+  void edgeDragHandsFilesToTheTargetComputer()
+  {
+    if constexpr (!NativeFileDrag::supported)
+      QSKIP("Edge file drag needs Windows or macOS");
+    EdgeDragFixture f(false);
+    f.server->onMouseDown(kButtonLeft);
+    f.stream->bytes.clear();
+    // Holding the button at the edge asks Windows what is being dragged; the cursor waits.
+    QVERIFY(!f.pushBottomEdge());
+    QCOMPARE(f.server->m_active, &f.windows);
+    auto packets = dragPackets(*f.stream);
+    QCOMPARE(packets.size(), 1);
+    QCOMPARE(packets.first().value("type").toString(), QStringLiteral("probe"));
+    QCOMPARE(packets.first().value("edge").toInteger(), static_cast<int>(Direction::Bottom));
+    const auto id = packets.first().value("id").toString();
+    QVERIFY(!id.isEmpty());
+    // Further pushes while waiting do not probe again or switch.
+    f.stream->bytes.clear();
+    QVERIFY(!f.pushBottomEdge());
+    QVERIFY(dragPackets(*f.stream).isEmpty());
+    // Answers for another id, or claiming to come from the Mac, are ignored.
+    f.answer("offer", packets.first().value("id").toString(), true);
+    QCOMPARE(f.server->m_active, &f.windows);
+    f.answer("offer", "stale");
+    QCOMPARE(f.server->m_active, &f.windows);
+    // The offer switches to the Mac even though the button is held.
+    f.answer("offer", id);
+    QCOMPARE(f.server->m_active, &f.primary);
+    QCOMPARE(f.primary.enters, 1);
+    QVERIFY(f.server->m_fileDragState == Server::FileDragState::Dragging);
+    // Releasing the button drops the files on the Mac and resets the state.
+    f.server->onMouseUp(kButtonLeft);
+    QVERIFY(f.server->m_fileDragState == Server::FileDragState::Idle);
+  }
+  void edgeDragWithoutFilesKeepsNormalSwitching()
+  {
+    if constexpr (!NativeFileDrag::supported)
+      QSKIP("Edge file drag needs Windows or macOS");
+    EdgeDragFixture f(true);
+    f.server->onMouseDown(kButtonLeft);
+    f.stream->bytes.clear();
+    f.pushBottomEdge();
+    const auto packets = dragPackets(*f.stream);
+    QCOMPARE(packets.size(), 1);
+    QCOMPARE(f.server->m_active, &f.windows);
+    f.answer("none", packets.first().value("id").toString());
+    QVERIFY(f.server->m_fileDragState == Server::FileDragState::Declined);
+    // With lock-to-computer disabled, a held button (e.g. dragging a window) switches as before.
+    QVERIFY(f.pushBottomEdge());
+    QCOMPARE(f.server->m_active, &f.primary);
+  }
+  void edgeDragReleasedWhileAskingCancels()
+  {
+    if constexpr (!NativeFileDrag::supported)
+      QSKIP("Edge file drag needs Windows or macOS");
+    EdgeDragFixture f(true);
+    f.server->onMouseDown(kButtonLeft);
+    f.stream->bytes.clear();
+    f.pushBottomEdge();
+    const auto id = dragPackets(*f.stream).first().value("id").toString();
+    f.stream->bytes.clear();
+    f.server->onMouseUp(kButtonLeft);
+    const auto packets = dragPackets(*f.stream);
+    QCOMPARE(packets.size(), 1);
+    QCOMPARE(packets.first().value("type").toString(), QStringLiteral("cancel"));
+    QCOMPARE(packets.first().value("id").toString(), id);
+    // A late offer must not move the cursor.
+    f.answer("offer", id);
+    QCOMPARE(f.server->m_active, &f.windows);
+    // Without the button the edge switches normally.
+    QVERIFY(f.pushBottomEdge());
+    QCOMPARE(f.server->m_active, &f.primary);
+  }
+  void windowDragFromTheMacTellsWindowsToStart()
+  {
+    if constexpr (!NativeFileDrag::supported)
+      QSKIP("Edge drag needs Windows or macOS");
+    EdgeDragFixture f(false);
+    f.windows.setWindowMirror(true);
+    f.server->m_active = &f.primary;
+    f.server->onMouseDown(kButtonLeft);
+    f.stream->bytes.clear();
+    QVERIFY(!f.pushEdge(&f.windows, Direction::Top));
+    const auto id = f.server->m_fileDragId;
+    // A dragged window is handed over exactly like dragged files.
+    f.answer("window", id, true);
+    QCOMPARE(f.server->m_active, &f.windows);
+    const auto packets = dragPackets(*f.stream);
+    QVERIFY(!packets.isEmpty());
+    QCOMPARE(packets.last().value("type").toString(), QStringLiteral("start"));
+    QCOMPARE(packets.last().value("id").toString(), id);
+  }
+  void edgeDragNeedsACapableClient()
+  {
+    EdgeDragFixture f(true);
+    f.windows.setEdgeFileDrag(false);
+    f.server->onMouseDown(kButtonLeft);
+    f.stream->bytes.clear();
+    QVERIFY(f.pushBottomEdge());
+    QVERIFY(dragPackets(*f.stream).isEmpty());
+    QCOMPARE(f.server->m_active, &f.primary);
+  }
+  void edgeDragFromTheMacTellsWindowsToStart()
+  {
+    if constexpr (!NativeFileDrag::supported)
+      QSKIP("Edge file drag needs Windows or macOS");
+    EdgeDragFixture f(false);
+    f.server->m_active = &f.primary;
+    f.server->onMouseDown(kButtonLeft);
+    f.stream->bytes.clear();
+    // The Mac answers through its local controller (not running here), so nothing goes to Windows yet.
+    QVERIFY(!f.pushEdge(&f.windows, Direction::Top));
+    QVERIFY(dragPackets(*f.stream).isEmpty());
+    QVERIFY(f.server->m_fileDragState == Server::FileDragState::Probing);
+    const auto id = f.server->m_fileDragId;
+    // Windows cannot answer for the Mac.
+    f.answer("offer", id);
+    QCOMPARE(f.server->m_active, &f.primary);
+    f.answer("offer", id, true);
+    QCOMPARE(f.server->m_active, &f.windows);
+    QCOMPARE(f.windows.enters, 1);
+    const auto packets = dragPackets(*f.stream);
+    QVERIFY(!packets.isEmpty());
+    QCOMPARE(packets.last().value("type").toString(), QStringLiteral("start"));
+    QCOMPARE(packets.last().value("id").toString(), id);
   }
   void feedbackRoundTripPreservesCoordinatesAndEnterSequence()
   {

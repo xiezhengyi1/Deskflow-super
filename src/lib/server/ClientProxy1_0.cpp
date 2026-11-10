@@ -20,6 +20,17 @@
 
 #include <cstring>
 
+namespace {
+// Packets the server's edge-drag state machine reacts to; data chunks are not copied to it.
+bool isEdgeDragAnswer(const QCborMap &packet)
+{
+  if (!packet.value(QStringLiteral("drag")).toBool())
+    return false;
+  const auto type = packet.value(QStringLiteral("type")).toString();
+  return type == "offer" || type == "window" || type == "none" || type == "cancel";
+}
+} // namespace
+
 //
 // ClientProxy1_0
 //
@@ -34,8 +45,7 @@ ClientProxy1_0::ClientProxy1_0(const std::string &name, deskflow::IStream *strea
     const auto encoded = QCborValue(data.packet).toCbor();
     const auto bytes = encoded.toStdString();
     ProtocolUtil::writef(getStream(), kMsgDNativeFileDrag, &bytes);
-    if ((data.packet.value(QStringLiteral("type")).toString() == "offer" ||
-         data.packet.value(QStringLiteral("type")).toString() == "cancel"))
+    if (isEdgeDragAnswer(data.packet))
       m_events->addEvent(Event(
           EventTypes::NativeFileDragStarted, nativeDragChannel().get(),
           new NativeFileDragEvent(data.packet, true, nativeDragChannel())
@@ -43,14 +53,13 @@ ClientProxy1_0::ClientProxy1_0(const std::string &name, deskflow::IStream *strea
   });
   m_events->addHandler(EventTypes::NativeFileDragIncoming, channel.get(), [this](const Event &event) {
     const auto &data = *static_cast<const NativeFileDragEvent *>(event.getDataObject());
-    if ((data.packet.value(QStringLiteral("type")).toString() == "offer" ||
-         data.packet.value(QStringLiteral("type")).toString() == "cancel"))
+    if (isEdgeDragAnswer(data.packet))
       m_events->addEvent(Event(
           EventTypes::NativeFileDragStarted, nativeDragChannel().get(),
           new NativeFileDragEvent(data.packet, false, nativeDragChannel())
       ));
     if constexpr (NativeFileDrag::supported)
-      NativeFileDrag::receive(QString::fromStdString(getName()), QCborValue(data.packet).toCbor());
+      NativeFileDrag::receive(QString::fromStdString(getName()), QCborValue(data.packet).toCbor(), false);
   });
 
   // install event handlers
@@ -205,7 +214,9 @@ bool ClientProxy1_0::parseMessage(const uint8_t *code)
     if (enabled != 0 && !NativeFileDrag::supported)
       throw BadClientException("Native file drag is supported on Windows and macOS only");
     setNativeFileDrag(enabled != 0);
-    setFileRelay(enabled == 2);
+    setFileRelay(enabled >= 2);
+    setEdgeFileDrag(enabled >= 3);
+    setWindowMirror(enabled >= 4);
     m_events->addEvent(Event(EventTypes::NativeFileDragMode, getEventTarget()));
     return true;
   }

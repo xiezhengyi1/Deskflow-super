@@ -30,6 +30,10 @@ add_library(${lib_name} STATIC ${PLATFORM_CODE}
   NativeFileDrag.cpp
   NativeFileDrag.h
   NativeFileDragPlatform.h
+  WindowMirror.cpp
+  WindowMirror.h
+  WindowMirrorPlatform.h
+  WindowMirrorRouting.h
   AppUtil.cpp
   AppUtil.h
   Chunk.cpp
@@ -95,9 +99,14 @@ add_library(${lib_name} STATIC ${PLATFORM_CODE}
 )
 
 if(WIN32)
-  target_sources(${lib_name} PRIVATE NativeFileDragWindows.cpp)
+  target_sources(${lib_name} PRIVATE NativeFileDragWindows.cpp WindowMirrorStub.cpp)
 elseif(APPLE)
-  target_sources(${lib_name} PRIVATE NativeFileDragMac.mm)
+  target_sources(${lib_name} PRIVATE NativeFileDragMac.mm WindowMirrorMac.mm)
+  target_link_libraries(${lib_name} PRIVATE
+    "-framework ScreenCaptureKit" "-framework CoreMedia" "-framework CoreVideo" "-framework ImageIO"
+    "-framework ApplicationServices" "-framework AppKit")
+else()
+  target_sources(${lib_name} PRIVATE WindowMirrorStub.cpp)
 endif()
 
 target_link_libraries(${lib_name}
