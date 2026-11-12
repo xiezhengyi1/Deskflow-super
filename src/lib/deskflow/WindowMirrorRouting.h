@@ -24,4 +24,7 @@ struct WindowMirrorRouting
   // Viewer side: counts left-button releases sent by the server. A mirror window that arrived
   // with the button held follows the cursor until the next one (no button is down locally).
   inline static std::atomic<unsigned> remoteLeftUps{0};
+  // The pointer is on the computer that owns the mirrored windows (set by its screen). Input
+  // the viewer reported a moment ago is then stale and must not move the real cursor.
+  inline static std::atomic<bool> ownerActive{true};
 };

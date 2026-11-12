@@ -808,6 +808,8 @@ void OSXComputer::disable()
 void OSXComputer::enter()
 {
   m_isOnComputer = true;
+  if (m_isPrimary)
+    WindowMirrorRouting::ownerActive = true;
   showCursor();
 
   if (m_isPrimary) {
@@ -847,10 +849,15 @@ void OSXComputer::leave()
     // a client (onMouseMove reads raw deltas instead). must follow hideCursor(),
     // which re-associates. re-coupled in enter()/disable().
     CGAssociateMouseAndMouseCursorPosition(false);
+    CGEventRef here = CGEventCreate(nullptr);
+    m_parkedCursor = CGEventGetLocation(here);
+    m_parkedCursorKnown = true;
+    CFRelease(here);
   }
 
   // now off computer
   m_isOnComputer = false;
+  WindowMirrorRouting::ownerActive = false;
 }
 
 bool OSXComputer::setClipboard(ClipboardID, const IClipboard *src)
@@ -1034,8 +1041,28 @@ bool OSXComputer::onMouseMove(CGEventRef event)
     // raw deltas from the event instead of diffing position.  trackpads report
     // fractional deltas; the integer fields drop them, which made slow motion
     // stick, so carry the remainder into the next event.
-    m_xDeltaRemainder += CGEventGetDoubleValueField(event, kCGMouseEventDeltaX);
-    m_yDeltaRemainder += CGEventGetDoubleValueField(event, kCGMouseEventDeltaY);
+    double deltaX = CGEventGetDoubleValueField(event, kCGMouseEventDeltaX);
+    double deltaY = CGEventGetDoubleValueField(event, kCGMouseEventDeltaY);
+    // The frozen cursor only moves when something posts input at another place, as the
+    // window mirror does to click in a mirrored window. macOS adds such a jump to the
+    // deltas of the next hardware event; left in, it would be sent on as mouse motion and
+    // throw the pointer across the other computer.
+    const CGPoint parked = CGEventGetLocation(event);
+    if (m_parkedCursorKnown) {
+      const double jumpX = parked.x - m_parkedCursor.x;
+      const double jumpY = parked.y - m_parkedCursor.y;
+      if (jumpX != 0 || jumpY != 0) {
+        if (std::fabs(jumpX) + std::fabs(jumpY) > 40)
+          LOG_DEBUG("parked cursor moved by %+.0f,%+.0f; taking it out of the mouse delta %+.0f,%+.0f", jumpX, jumpY,
+                    deltaX, deltaY);
+        deltaX -= jumpX;
+        deltaY -= jumpY;
+      }
+    }
+    m_parkedCursor = parked;
+    m_parkedCursorKnown = true;
+    m_xDeltaRemainder += deltaX;
+    m_yDeltaRemainder += deltaY;
     const auto dx = static_cast<int32_t>(std::lround(m_xDeltaRemainder));
     const auto dy = static_cast<int32_t>(std::lround(m_yDeltaRemainder));
     m_xDeltaRemainder -= dx;

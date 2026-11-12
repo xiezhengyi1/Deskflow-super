@@ -242,6 +242,9 @@ private:
 
   // sub-pixel motion carried between events while on a client
   double m_xDeltaRemainder = 0.0;
+  // Where the frozen cursor was at the last hardware mouse event while off this computer.
+  CGPoint m_parkedCursor = CGPointZero;
+  bool m_parkedCursorKnown = false;
   double m_yDeltaRemainder = 0.0;
 
   /* FIXME: this data structure is explicitly marked mutable due

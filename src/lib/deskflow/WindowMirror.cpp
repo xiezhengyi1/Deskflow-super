@@ -12,12 +12,14 @@
 #include <QCursor>
 #include <QElapsedTimer>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QImage>
 #include <QLineF>
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPointer>
+#include <QScreen>
 #include <QTimer>
 #include <QWidget>
 #include <algorithm>
@@ -259,6 +261,16 @@ void handleOwnerPacket(OwnedWindow &window, const QString &type, const QCborMap 
     const auto fy = std::clamp(packet.value(QStringLiteral("fy")).toDouble(), -4.0, 5.0);
     window.pointer = QPointF(fx * window.window.frame.width(), fy * window.window.frame.height());
     const int dragButton = window.heldButtons & 1 ? 1 : (window.heldButtons & 4 ? 3 : 2);
+    if (WindowMirrorRouting::ownerActive) {
+      // The pointer has come back to this computer; a report still on its way must not
+      // move the real cursor here.
+      window.pointerInside = false;
+      if (pointerOwner == window.id) {
+        pointerOwner.clear();
+        WindowMirrorRouting::pointerInMirror = false;
+      }
+      return;
+    }
     if (inside) {
       if (!window.pointerInside) {
         window.pointerInside = true;
@@ -484,9 +496,19 @@ private:
     move(QCursor::pos() - m_grab.toPoint());
     if (WindowMirrorRouting::remoteLeftUps == m_releasesAtStart && m_followClock.elapsed() < kMaxFollowMs)
       return;
-    // Dropped: from now on this is an ordinary window.
+    // Dropped: from now on this is an ordinary window. It usually arrives at the screen edge
+    // it was dragged over, so bring all of it onto the screen.
     m_follow.stop();
     m_following = false;
+    if (const auto *screen = QGuiApplication::screenAt(QCursor::pos()) ? QGuiApplication::screenAt(QCursor::pos())
+                                                                         : QGuiApplication::primaryScreen()) {
+      const QRect area = screen->availableGeometry();
+      const QRect frame = frameGeometry();
+      const int x = std::max(area.left(), std::min(frame.left(), area.right() - frame.width() + 1));
+      const int y = std::max(area.top(), std::min(frame.top(), area.bottom() - frame.height() + 1));
+      if (QPoint(x, y) != frame.topLeft())
+        move(x, y);
+    }
     sendResize();
     send({{QStringLiteral("type"), QStringLiteral("focus")}, {QStringLiteral("focused"), isActiveWindow()}});
   }
