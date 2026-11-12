@@ -56,6 +56,7 @@ struct OwnedWindow
   qint64 seq = 0;
   QPointF pointer; // points inside the window (outside it while a drag has left the viewer)
   bool pointerInside = false;
+  quint64 pointerSerial = 0;
   int heldButtons = 0;
   QElapsedTimer lastDown;
   QPointF lastDownAt;
@@ -84,6 +85,7 @@ constexpr int kWatchMs = 250;
 constexpr int kStatsMs = 5000;
 constexpr int kMaxDragOutTries = 25;
 constexpr int kMaxRestMs = 200;
+constexpr int kHoverRestMs = 150;
 
 OwnedWindow *ownedWindow(const QString &id)
 {
@@ -278,10 +280,21 @@ void handleOwnerPacket(OwnedWindow &window, const QString &type, const QCborMap 
       }
       pointerOwner = window.id;
       WindowMirrorRouting::pointerInMirror = true;
-      WindowMirrorPlatform::injectMouse(
-          window.window.windowId, window.heldButtons ? MouseAction::Drag : MouseAction::Move, dragButton,
-          window.pointer, 0
-      );
+      const auto serial = ++window.pointerSerial;
+      if (window.heldButtons) {
+        WindowMirrorPlatform::injectMouse(window.window.windowId, MouseAction::Drag, dragButton, window.pointer, 0);
+      } else {
+        // Every replayed move puts the real cursor somewhere else, so the pointer is only
+        // brought along once it rests (hover effects, tooltips); presses and scrolling move
+        // it themselves.
+        const auto id = window.id;
+        QTimer::singleShot(kHoverRestMs, controller, [id, serial] {
+          auto *window = ownedWindow(id);
+          if (window && window->pointerSerial == serial && window->pointerInside && !window->heldButtons &&
+              !WindowMirrorRouting::ownerActive)
+            WindowMirrorPlatform::injectMouse(window->window.windowId, MouseAction::Move, 1, window->pointer, 0);
+        });
+      }
     } else {
       window.pointerInside = false;
       if (pointerOwner == window.id) {

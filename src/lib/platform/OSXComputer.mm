@@ -849,10 +849,8 @@ void OSXComputer::leave()
     // a client (onMouseMove reads raw deltas instead). must follow hideCursor(),
     // which re-associates. re-coupled in enter()/disable().
     CGAssociateMouseAndMouseCursorPosition(false);
-    CGEventRef here = CGEventCreate(nullptr);
-    m_parkedCursor = CGEventGetLocation(here);
-    m_parkedCursorKnown = true;
-    CFRelease(here);
+    m_lastMoveKnown = false;
+    m_replaySeen = m_replayPending = WindowMirrorRouting::replaySeq.load();
   }
 
   // now off computer
@@ -1043,24 +1041,34 @@ bool OSXComputer::onMouseMove(CGEventRef event)
     // stick, so carry the remainder into the next event.
     double deltaX = CGEventGetDoubleValueField(event, kCGMouseEventDeltaX);
     double deltaY = CGEventGetDoubleValueField(event, kCGMouseEventDeltaY);
-    // The frozen cursor only moves when something posts input at another place, as the
-    // window mirror does to click in a mirrored window. macOS adds such a jump to the
-    // deltas of the next hardware event; left in, it would be sent on as mouse motion and
-    // throw the pointer across the other computer.
-    const CGPoint parked = CGEventGetLocation(event);
-    if (m_parkedCursorKnown) {
-      const double jumpX = parked.x - m_parkedCursor.x;
-      const double jumpY = parked.y - m_parkedCursor.y;
-      if (jumpX != 0 || jumpY != 0) {
-        if (std::fabs(jumpX) + std::fabs(jumpY) > 40)
-          LOG_DEBUG("parked cursor moved by %+.0f,%+.0f; taking it out of the mouse delta %+.0f,%+.0f", jumpX, jumpY,
-                    deltaX, deltaY);
-        deltaX -= jumpX;
-        deltaY -= jumpY;
+    // Hardware events carry a position that advances by their own delta. Input the window
+    // mirror replays at another place on screen resets that position, and the next hardware
+    // event then reports the whole jump as mouse motion, which would throw the pointer
+    // across the other computer. Such an event shows up closer to the replayed position than
+    // to the previous hardware event: only then its motion is measured from the replayed
+    // position instead.
+    const CGPoint at = CGEventGetLocation(event);
+    const uint32_t replayed = WindowMirrorRouting::replaySeq.load();
+    if (replayed != m_replaySeen) {
+      if (m_replayPending != replayed) {
+        m_replayPending = replayed;
+        m_replayNoticed = CFAbsoluteTimeGetCurrent();
+      }
+      const double px = WindowMirrorRouting::replayX.load(), py = WindowMirrorRouting::replayY.load();
+      const double fromReplay = std::hypot(at.x - px, at.y - py);
+      const double fromLast = m_lastMoveKnown ? std::hypot(at.x - m_lastMove.x, at.y - m_lastMove.y) : 0;
+      if (m_lastMoveKnown && fromReplay < fromLast) {
+        LOG_DEBUG("mouse delta %+.0f,%+.0f came after replayed input at %.0f,%.0f; using %+.0f,%+.0f", deltaX, deltaY,
+                  px, py, at.x - px, at.y - py);
+        deltaX = at.x - px;
+        deltaY = at.y - py;
+        m_replaySeen = replayed;
+      } else if (CFAbsoluteTimeGetCurrent() - m_replayNoticed > 0.1) {
+        m_replaySeen = replayed; // it changed nothing we can see
       }
     }
-    m_parkedCursor = parked;
-    m_parkedCursorKnown = true;
+    m_lastMove = at;
+    m_lastMoveKnown = true;
     m_xDeltaRemainder += deltaX;
     m_yDeltaRemainder += deltaY;
     const auto dx = static_cast<int32_t>(std::lround(m_xDeltaRemainder));

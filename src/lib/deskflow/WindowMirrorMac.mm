@@ -244,6 +244,10 @@ void postMouse(CGEventType type, CGMouseButton button, CGPoint at, int clicks)
   CGEventSetDoubleValueField(event, kCGMouseEventDeltaX, at.x - s_lastPosted.x);
   CGEventSetDoubleValueField(event, kCGMouseEventDeltaY, at.y - s_lastPosted.y);
   s_lastPosted = at;
+  // Tell Deskflow's event tap where the cursor is being put (see OSXComputer::onMouseMove).
+  WindowMirrorRouting::replayX = at.x;
+  WindowMirrorRouting::replayY = at.y;
+  ++WindowMirrorRouting::replaySeq;
   postReal(event);
 }
 
@@ -904,6 +908,9 @@ void WindowMirrorPlatform::injectWheel(quint32 windowId, QPointF point, int xDel
   if (!s_owned.count(windowId) || !globalPoint(windowId, point, at))
     return;
   deliverInput([at, xDelta, yDelta] {
+    // Scrolling goes to the window under the cursor.
+    if (std::fabs(at.x - s_lastPosted.x) > 2 || std::fabs(at.y - s_lastPosted.y) > 2)
+      postMouse(kCGEventMouseMoved, kCGMouseButtonLeft, at, 0);
     // Deskflow uses 120 per notch; a quarter of that in pixels scrolls like a trackpad.
     CGEventRef event = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitPixel, 2, yDelta / 4, xDelta / 4);
     CGEventSetLocation(event, at);

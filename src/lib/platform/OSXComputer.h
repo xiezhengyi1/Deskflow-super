@@ -242,9 +242,13 @@ private:
 
   // sub-pixel motion carried between events while on a client
   double m_xDeltaRemainder = 0.0;
-  // Where the frozen cursor was at the last hardware mouse event while off this computer.
-  CGPoint m_parkedCursor = CGPointZero;
-  bool m_parkedCursorKnown = false;
+  // Position of the last hardware mouse event while off this computer, and the window
+  // mirror's replayed input already accounted for (see onMouseMove).
+  CGPoint m_lastMove = CGPointZero;
+  bool m_lastMoveKnown = false;
+  uint32_t m_replaySeen = 0;
+  uint32_t m_replayPending = 0;
+  double m_replayNoticed = 0;
   double m_yDeltaRemainder = 0.0;
 
   /* FIXME: this data structure is explicitly marked mutable due

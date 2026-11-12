@@ -4,6 +4,7 @@
  */
 #pragma once
 #include <atomic>
+#include <cstdint>
 
 // Shared between the macOS event tap, the server's core thread and the window-mirror
 // controller. Set only on the computer that owns a mirrored window (the Mac server).
@@ -27,4 +28,10 @@ struct WindowMirrorRouting
   // The pointer is on the computer that owns the mirrored windows (set by its screen). Input
   // the viewer reported a moment ago is then stale and must not move the real cursor.
   inline static std::atomic<bool> ownerActive{true};
+  // Owner side: where input was last replayed into a mirrored window (global points), and a
+  // count of such events. The screen's event tap uses it to keep the cursor jump out of the
+  // mouse motion it forwards.
+  inline static std::atomic<uint32_t> replaySeq{0};
+  inline static std::atomic<double> replayX{0};
+  inline static std::atomic<double> replayY{0};
 };
