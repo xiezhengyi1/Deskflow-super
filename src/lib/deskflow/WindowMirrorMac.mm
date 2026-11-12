@@ -21,6 +21,8 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <signal.h>
+#include <vector>
 #include <unistd.h>
 
 // This file is compiled without ARC; ownership is managed explicitly.
@@ -130,6 +132,7 @@ void setAxPosition(AXUIElementRef element, CGPoint point)
 AXUIElementRef findAxWindow(pid_t pid, CGRect bounds, NSString *title)
 {
   AXUIElementRef app = AXUIElementCreateApplication(pid);
+  AXUIElementSetMessagingTimeout(app, 1.0f); // an app that does not answer must not stall Deskflow
   CFTypeRef windows = nullptr;
   AXUIElementRef found = nullptr;
   if (AXUIElementCopyAttributeValue(app, kAXWindowsAttribute, &windows) == kAXErrorSuccess && windows) {
@@ -251,8 +254,43 @@ void postMouse(CGEventType type, CGMouseButton button, CGPoint at, int clicks)
   postReal(event);
 }
 
+// The app owning the frontmost ordinary window that does not belong to `except`.
+pid_t frontAppExcept(pid_t except)
+{
+  CFArrayRef list =
+      CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+  if (!list)
+    return 0;
+  pid_t found = 0;
+  for (NSDictionary *info in (NSArray *)list) {
+    if ([info[(id)kCGWindowLayer] intValue] != 0 || [info[(id)kCGWindowAlpha] doubleValue] <= 0)
+      continue;
+    const pid_t pid = [info[(id)kCGWindowOwnerPID] intValue];
+    const CGRect bounds = boundsOf(info);
+    if (pid == except || pid == getpid() || bounds.size.width < 40 || bounds.size.height < 40)
+      continue;
+    found = pid;
+    break;
+  }
+  CFRelease(list);
+  return found;
+}
+
+void makeFrontmost(pid_t pid)
+{
+  AXUIElementRef app = AXUIElementCreateApplication(pid);
+  AXUIElementSetMessagingTimeout(app, 0.5f);
+  AXUIElementSetAttributeValue(app, kAXFrontmostAttribute, kCFBooleanTrue);
+  CFRelease(app);
+}
+
+// The app the user had in front before a mirrored window was raised over it.
+pid_t s_previousFront = 0;
+
 void raiseWindow(const Owned &owned)
 {
+  if (const pid_t front = frontAppExcept(0); front && front != owned.pid)
+    s_previousFront = front;
   // Through Accessibility this works from a background process, without a click.
   AXUIElementRef app = AXUIElementCreateApplication(owned.pid);
   AXUIElementSetAttributeValue(app, kAXFrontmostAttribute, kCFBooleanTrue);
@@ -869,6 +907,58 @@ void WindowMirrorPlatform::raise(quint32 windowId)
   raiseThenDeliver(it->second);
 }
 
+void WindowMirrorPlatform::sendToBack(quint32 windowId)
+{
+  const auto it = s_owned.find(windowId);
+  NSDictionary *self = windowInfo(windowId);
+  if (it == s_owned.end() || !self)
+    return;
+  const pid_t owner = it->second.pid;
+  const CGRect frame = boundsOf(self);
+  // macOS cannot push another app's window down, so every window it overlaps is brought
+  // forward instead, from the back to the front: their order among themselves stays.
+  struct Other
+  {
+    pid_t pid;
+    CGRect bounds;
+    NSString *title;
+  };
+  std::vector<Other> overlapping; // front to back
+  CFArrayRef list =
+      CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+  if (list) {
+    for (NSDictionary *info in (NSArray *)list) {
+      if ([info[(id)kCGWindowLayer] intValue] != 0 || [info[(id)kCGWindowAlpha] doubleValue] <= 0)
+        continue;
+      const pid_t pid = [info[(id)kCGWindowOwnerPID] intValue];
+      const CGRect bounds = boundsOf(info);
+      const CGRect shared = CGRectIntersection(bounds, frame);
+      if (pid == owner || pid == getpid() || CGRectIsNull(shared) || shared.size.width < 8 || shared.size.height < 8)
+        continue;
+      overlapping.push_back({pid, bounds, [[info[(id)kCGWindowName] retain] autorelease]});
+    }
+    CFRelease(list);
+  }
+  pid_t last = 0;
+  for (auto other = overlapping.rbegin(); other != overlapping.rend(); ++other) {
+    AXUIElementRef element = findAxWindow(other->pid, other->bounds, other->title);
+    if (!element)
+      continue;
+    AXUIElementSetMessagingTimeout(element, 0.5f);
+    AXUIElementPerformAction(element, kAXRaiseAction);
+    CFRelease(element);
+    makeFrontmost(other->pid);
+    last = other->pid;
+  }
+  // The keyboard goes back to where it was before this window came forward.
+  pid_t front = s_previousFront && s_previousFront != owner && kill(s_previousFront, 0) == 0 ? s_previousFront : 0;
+  if (!front)
+    front = last ? last : frontAppExcept(owner);
+  if (front && front != last)
+    makeFrontmost(front);
+  LOG_DEBUG("window mirror: put the window behind %d other window(s)", static_cast<int>(overlapping.size()));
+}
+
 void WindowMirrorPlatform::activateForKeyboard(quint32 windowId)
 {
   const auto it = s_owned.find(windowId);
@@ -922,8 +1012,12 @@ void WindowMirrorPlatform::injectMouse(quint32 windowId, MouseAction action, int
 void WindowMirrorPlatform::injectWheel(quint32 windowId, QPointF point, int xDelta, int yDelta)
 {
   CGPoint at;
-  if (!s_owned.count(windowId) || !globalPoint(windowId, point, at))
+  const auto it = s_owned.find(windowId);
+  if (it == s_owned.end() || !globalPoint(windowId, point, at))
     return;
+  // Scrolling reaches whatever is on top at that spot.
+  if (!isOnTopAt(windowId, at))
+    raiseThenDeliver(it->second);
   deliverInput([at, xDelta, yDelta] {
     // Scrolling goes to the window under the cursor.
     if (std::fabs(at.x - s_lastPosted.x) > 2 || std::fabs(at.y - s_lastPosted.y) > 2)

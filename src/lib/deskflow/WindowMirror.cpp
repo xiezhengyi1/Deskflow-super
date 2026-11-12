@@ -56,6 +56,10 @@ struct OwnedWindow
   qint64 seq = 0;
   QPointF pointer; // points inside the window (outside it while a drag has left the viewer)
   bool pointerInside = false;
+  // The real window is in front on this computer. It only needs to be while the copy is in
+  // use; otherwise it is kept behind the other windows, out of the user's way.
+  bool inFront = true;
+  QElapsedTimer lastInput;
   // 1: a viewer from before pictures of changed areas existed (it never says hello).
   int viewerVersion = 1;
   bool warnedOldViewer = false;
@@ -89,6 +93,8 @@ constexpr int kStatsMs = 5000;
 constexpr int kMaxDragOutTries = 25;
 constexpr int kMaxRestMs = 200;
 constexpr int kHoverRestMs = 150;
+// How long the real window stays in front after a click or scroll in a copy without focus.
+constexpr int kStayInFrontMs = 1500;
 // Viewer version that understands pictures of changed areas, "size" and "refresh".
 constexpr int kPatchVersion = 2;
 
@@ -181,11 +187,39 @@ void onFrame(const QString &id, const QByteArray &jpeg, QRect patch, QSize full,
                             {QStringLiteral("jpeg"), jpeg}});
 }
 
+// Clicks and typing only reach the real window while it is in front, so it comes forward while
+// the copy has the keyboard, a button is held in it, or it was just clicked or scrolled.
+bool wantsFront(const OwnedWindow &window)
+{
+  if (WindowMirrorRouting::ownerActive)
+    return false; // the user is back on this computer
+  return focusOwner == window.id || window.heldButtons != 0 ||
+         (window.lastInput.isValid() && window.lastInput.elapsed() < kStayInFrontMs);
+}
+
+void settleOrder(OwnedWindow &window)
+{
+  if (!window.adopted)
+    return;
+  const bool wanted = wantsFront(window);
+  if (wanted && !window.inFront) {
+    window.inFront = true;
+    if (focusOwner == window.id)
+      WindowMirrorPlatform::activateForKeyboard(window.window.windowId);
+    else
+      WindowMirrorPlatform::raise(window.window.windowId);
+  } else if (!wanted && window.inFront) {
+    window.inFront = false;
+    WindowMirrorPlatform::sendToBack(window.window.windowId);
+  }
+}
+
 // The real window may change by itself (resized by its app, closed): keep the viewer in step.
 void watchOwned()
 {
   QStringList gone;
   for (const auto &[id, window] : owned) {
+    settleOrder(*window);
     const auto frame = WindowMirrorPlatform::frame(window->window.windowId);
     if (!frame) {
       gone.append(id);
@@ -288,14 +322,12 @@ void handleOwnerPacket(OwnedWindow &window, const QString &type, const QCborMap 
       return;
     }
     if (inside) {
-      if (!window.pointerInside) {
-        window.pointerInside = true;
-        WindowMirrorPlatform::raise(window.window.windowId);
-      }
+      window.pointerInside = true;
       pointerOwner = window.id;
       WindowMirrorRouting::pointerInMirror = true;
       const auto serial = ++window.pointerSerial;
       if (window.heldButtons) {
+        window.lastInput.start();
         WindowMirrorPlatform::injectMouse(window.window.windowId, MouseAction::Drag, dragButton, window.pointer, 0);
       } else {
         // Every replayed move puts the real cursor somewhere else, so the pointer is only
@@ -304,8 +336,9 @@ void handleOwnerPacket(OwnedWindow &window, const QString &type, const QCborMap 
         const auto id = window.id;
         QTimer::singleShot(kHoverRestMs, controller, [id, serial] {
           auto *window = ownedWindow(id);
+          // Only while the real window is in front: hovering alone does not bring it forward.
           if (window && window->pointerSerial == serial && window->pointerInside && !window->heldButtons &&
-              !WindowMirrorRouting::ownerActive)
+              window->inFront && !WindowMirrorRouting::ownerActive)
             WindowMirrorPlatform::injectMouse(window->window.windowId, MouseAction::Move, 1, window->pointer, 0);
         });
       }
@@ -325,6 +358,7 @@ void handleOwnerPacket(OwnedWindow &window, const QString &type, const QCborMap 
   } else if (type == "focus") {
     if (packet.value(QStringLiteral("focused")).toBool()) {
       focusOwner = window.id;
+      window.inFront = true;
       WindowMirrorPlatform::activateForKeyboard(window.window.windowId);
       WindowMirrorRouting::keyboardToMac = true;
     } else if (focusOwner == window.id) {
@@ -690,6 +724,7 @@ std::optional<QCborMap> WindowMirror::takeOverWindowDrag(const QString &peer, co
       "window mirror: showing \"%s\" (%s, %dx%d) on the other computer", qPrintable(dragged->title),
       qPrintable(dragged->app), qRound(dragged->frame.width()), qRound(dragged->frame.height())
   );
+  window->lastInput.start(); // stays in front until the copy is dropped and has the keyboard
   owned[id] = std::move(window);
   if (!watcher && controller) {
     watcher = new QTimer(controller);
@@ -830,6 +865,8 @@ void WindowMirror::injectButton(int button, bool down)
           window->lastDown.start();
           window->lastDownAt = window->pointer;
           window->heldButtons |= bit;
+          window->lastInput.start();
+          window->inFront = true; // the press brings it forward if something covers it
           buttonOwner = window->id;
           if (bit == 1) {
             // A file drag starting with this press shows up on the drag pasteboard.
@@ -843,6 +880,7 @@ void WindowMirror::injectButton(int button, bool down)
           if (!window || !(window->heldButtons & bit))
             return;
           window->heldButtons &= ~bit;
+          window->lastInput.start();
           WindowMirrorPlatform::injectMouse(window->window.windowId, MouseAction::Up, button, window->pointer, window->clicks);
         }
       },
@@ -857,8 +895,11 @@ void WindowMirror::injectWheel(int xDelta, int yDelta)
   QMetaObject::invokeMethod(
       controller,
       [xDelta, yDelta] {
-        if (auto *window = ownedWindow(pointerOwner))
+        if (auto *window = ownedWindow(pointerOwner)) {
+          window->lastInput.start();
+          window->inFront = true;
           WindowMirrorPlatform::injectWheel(window->window.windowId, window->pointer, xDelta, yDelta);
+        }
       },
       Qt::QueuedConnection
   );

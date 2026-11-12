@@ -49,6 +49,9 @@ std::optional<QRectF> frame(quint32 windowId);
 void resize(quint32 windowId, QSizeF points);
 // Brings the window to the front so that clicks at its position reach it.
 void raise(quint32 windowId);
+// Puts the window behind every window it overlaps and gives the keyboard back to the app
+// that was in front before the window was raised, so it is out of the way on this computer.
+void sendToBack(quint32 windowId);
 // Makes the owning app frontmost with this window as its key window, so typing reaches it.
 void activateForKeyboard(quint32 windowId);
 

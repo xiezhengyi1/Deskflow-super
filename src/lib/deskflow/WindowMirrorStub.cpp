@@ -34,6 +34,9 @@ std::optional<QRectF> WindowMirrorPlatform::frame(quint32)
 void WindowMirrorPlatform::raise(quint32)
 {
 }
+void WindowMirrorPlatform::sendToBack(quint32)
+{
+}
 void WindowMirrorPlatform::resize(quint32, QSizeF)
 {
 }
