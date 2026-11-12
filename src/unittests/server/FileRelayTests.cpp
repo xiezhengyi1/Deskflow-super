@@ -210,7 +210,8 @@ private Q_SLOTS:
         {QStringLiteral("drag"), true},
         {QStringLiteral("type"), QStringLiteral("window")},
         {QStringLiteral("id"), QStringLiteral("w1")},
-        {QStringLiteral("title"), QStringLiteral("TextEdit — Notes")},
+        {QStringLiteral("name"), QStringLiteral("TextEdit — Notes")},
+        {QStringLiteral("title"), QStringLiteral("TextEdit — Notes [update Deskflow on this computer]")},
         {QStringLiteral("w"), 400},
         {QStringLiteral("h"), 300},
         {QStringLiteral("grabX"), 120},
@@ -218,8 +219,13 @@ private Q_SLOTS:
     };
     WindowMirror::handleWindowOffer("server", offer);
     QCOMPARE(WindowMirror::viewerWindows().size(), 1);
+    // The viewer says at once what it can show; the owner sends partial pictures only then.
+    QCOMPARE(sent.size(), 1);
+    QCOMPARE(sent.first().second.value("type").toString(), QStringLiteral("hello"));
+    QVERIFY(sent.first().second.value("v").toInteger() >= 2);
     auto *view = WindowMirror::viewerWindows().first();
     QVERIFY(view->windowTitle().contains("TextEdit — Notes"));
+    QVERIFY(!view->windowTitle().contains("update Deskflow")); // that notice is for viewers older than "name"
     QCOMPARE(view->size(), QSize(400, 300));
     QVERIFY(!view->isVisible());
     QVERIFY(!WindowMirror::handleStart("unknown"));

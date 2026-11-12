@@ -363,12 +363,14 @@ void followGrab()
   // Areas last sent at low quality while they were moving.
   QRect blurred;
   BOOL sharpenArmed;
+  BOOL patches;
   CFAbsoluteTime lastSent;
 }
 - (void)start;
 - (void)requestFrame;
 - (void)requestFullFrame;
 - (void)refreshSize;
+- (void)setPatches:(BOOL)enabled;
 - (void)shutdown;
 @end
 
@@ -575,6 +577,11 @@ void followGrab()
   }
   if (patch.isEmpty())
     return; // nothing changed: stay `wanted` until the window does
+  if (!patches) {
+    // An older viewer shows every picture as the whole window.
+    [self sendArea:QRect(0, 0, width, height) quality:(known ? 0.55 : 0.8) began:began];
+    return;
+  }
   // A large area changing over and over is motion (scrolling, video): send it small and
   // quickly so the shared connection stays free for the mouse, and sharpen it once it rests.
   const double share = double(patch.width()) * patch.height() / (double(width) * height);
@@ -625,6 +632,12 @@ void followGrab()
     [self encodeLatest];
   });
 }
+- (void)setPatches:(BOOL)enabled
+{
+  dispatch_async(queue, ^{
+    patches = enabled;
+  });
+}
 - (void)refreshSize
 {
   const QSize size = nativePixels(windowId);
@@ -670,6 +683,10 @@ public:
   void refreshSize() override
   {
     [m_impl refreshSize];
+  }
+  void setPatches(bool enabled) override
+  {
+    [m_impl setPatches:enabled];
   }
 
 private:

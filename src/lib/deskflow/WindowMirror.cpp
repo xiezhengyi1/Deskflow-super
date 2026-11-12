@@ -56,6 +56,9 @@ struct OwnedWindow
   qint64 seq = 0;
   QPointF pointer; // points inside the window (outside it while a drag has left the viewer)
   bool pointerInside = false;
+  // 1: a viewer from before pictures of changed areas existed (it never says hello).
+  int viewerVersion = 1;
+  bool warnedOldViewer = false;
   quint64 pointerSerial = 0;
   int heldButtons = 0;
   QElapsedTimer lastDown;
@@ -86,6 +89,8 @@ constexpr int kStatsMs = 5000;
 constexpr int kMaxDragOutTries = 25;
 constexpr int kMaxRestMs = 200;
 constexpr int kHoverRestMs = 150;
+// Viewer version that understands pictures of changed areas, "size" and "refresh".
+constexpr int kPatchVersion = 2;
 
 OwnedWindow *ownedWindow(const QString &id)
 {
@@ -233,7 +238,16 @@ void tryDragOut(OwnedWindow &window)
 void handleOwnerPacket(OwnedWindow &window, const QString &type, const QCborMap &packet)
 {
   using WindowMirrorPlatform::MouseAction;
-  if (type == "ack") {
+  if (type == "hello") {
+    window.viewerVersion = static_cast<int>(packet.value(QStringLiteral("v")).toInteger(1));
+    if (window.capture)
+      window.capture->setPatches(window.viewerVersion >= kPatchVersion);
+  } else if (type == "ack") {
+    if (window.viewerVersion < kPatchVersion && !window.warnedOldViewer) {
+      window.warnedOldViewer = true;
+      LOG_WARN("window mirror: the other computer runs an older Deskflow that cannot show partial pictures; "
+               "sending complete ones, which is slower and less sharp. Update Deskflow there.");
+    }
     // One picture in flight at a time: the rate follows the link, and input never waits
     // behind a backlog of pictures on the shared connection.
     if (packet.value(QStringLiteral("seq")).toInteger() == window.seq && window.capture) {
@@ -688,7 +702,10 @@ std::optional<QCborMap> WindowMirror::takeOverWindowDrag(const QString &peer, co
   return QCborMap{
       {QStringLiteral("type"), QStringLiteral("window")},
       {QStringLiteral("id"), id},
-      {QStringLiteral("title"), title},
+      // Current viewers show "name". Only a viewer from before it existed shows "title", so
+      // that is where it can be told it is out of date.
+      {QStringLiteral("name"), title},
+      {QStringLiteral("title"), QStringLiteral("%1 [update Deskflow on this computer / 请更新此电脑上的 Deskflow]").arg(title)},
       {QStringLiteral("w"), dragged->frame.width()},
       {QStringLiteral("h"), dragged->frame.height()},
       {QStringLiteral("grabX"), dragged->grab.x()},
@@ -704,10 +721,15 @@ void WindowMirror::handleWindowOffer(const QString &peer, const QCborMap &packet
       points.height() > 16000)
     return;
   const QPointF grab(packet.value(QStringLiteral("grabX")).toDouble(), packet.value(QStringLiteral("grabY")).toDouble());
-  const auto title = QCoreApplication::translate("WindowMirror", "%1 (from the other computer)")
-                         .arg(packet.value(QStringLiteral("title")).toString());
+  const auto name = packet.contains(QStringLiteral("name")) ? packet.value(QStringLiteral("name")).toString()
+                                                           : packet.value(QStringLiteral("title")).toString();
+  const auto title = QCoreApplication::translate("WindowMirror", "%1 (from the other computer)").arg(name);
   auto *view = new MirrorView(peer, id, title, points, grab);
   viewers[id] = view;
+  // Tells the owner what this viewer can show; without it the owner sends complete pictures.
+  sendMirror(peer, {{QStringLiteral("type"), QStringLiteral("hello")},
+                    {QStringLiteral("id"), id},
+                    {QStringLiteral("v"), kPatchVersion}});
   LOG_INFO("window mirror: receiving \"%s\"", qPrintable(title));
   // The server normally switches here within milliseconds; drop the window if it never does.
   QTimer::singleShot(kUnstartedViewerMs, view, [view] {

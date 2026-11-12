@@ -76,6 +76,9 @@ public:
   virtual void requestFullFrame() = 0;
   // The window changed size: capture at the new native size.
   virtual void refreshSize() = 0;
+  // Whether frames may carry only the changed area. Off (the default), every frame is the
+  // complete picture, which is all an older viewer can show.
+  virtual void setPatches(bool enabled) = 0;
 };
 // jpeg holds the area `patch` of a picture `full` pixels large.
 using FrameCallback = std::function<void(const QByteArray &jpeg, QRect patch, QSize full, int encodeMs)>;
