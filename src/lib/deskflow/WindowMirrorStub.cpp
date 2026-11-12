@@ -20,11 +20,18 @@ bool WindowMirrorPlatform::canCapture()
 {
   return false;
 }
-bool WindowMirrorPlatform::hide(const DraggedWindow &)
+bool WindowMirrorPlatform::adopt(const DraggedWindow &)
 {
   return false;
 }
-void WindowMirrorPlatform::restore(quint32)
+void WindowMirrorPlatform::release(quint32)
+{
+}
+std::optional<QRectF> WindowMirrorPlatform::frame(quint32)
+{
+  return std::nullopt;
+}
+void WindowMirrorPlatform::raise(quint32)
 {
 }
 void WindowMirrorPlatform::resize(quint32, QSizeF)
@@ -40,7 +47,7 @@ void WindowMirrorPlatform::injectWheel(quint32, QPointF, int, int)
 {
 }
 std::unique_ptr<WindowMirrorPlatform::Capture>
-WindowMirrorPlatform::startCapture(quint32, QSize, FrameCallback, StopCallback)
+WindowMirrorPlatform::startCapture(quint32, FrameCallback, StopCallback)
 {
   return nullptr;
 }

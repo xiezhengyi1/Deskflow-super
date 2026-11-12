@@ -6,6 +6,7 @@
 #include "deskflow/FileRelayWindow.h"
 #include "deskflow/NativeFileDrag.h"
 #include "deskflow/WindowMirror.h"
+#include "deskflow/WindowMirrorRouting.h"
 #include <QBuffer>
 #include <QImage>
 #include <QWidget>
@@ -224,7 +225,11 @@ private Q_SLOTS:
     QVERIFY(!WindowMirror::handleStart("unknown"));
     QVERIFY(WindowMirror::handleStart("w1"));
     QVERIFY(view->isVisible());
-    // No button is held in the test, so the drop happens at once: size and focus are reported.
+    // The window follows the cursor until the server reports the button's release.
+    QTest::qWait(50);
+    QVERIFY(std::none_of(sent.cbegin(), sent.cend(), [](const auto &p) { return p.second.value("type").toString() == "resize"; }));
+    ++WindowMirrorRouting::remoteLeftUps;
+    // Dropped: size and focus are reported.
     QTRY_VERIFY(std::any_of(sent.cbegin(), sent.cend(), [](const auto &p) {
       return p.second.value("type").toString() == "resize" && p.second.value("w").toInteger() == 400;
     }));
@@ -253,10 +258,67 @@ private Q_SLOTS:
     sent.clear();
     WindowMirror::handlePacket("other", {{QStringLiteral("type"), QStringLiteral("frame")}, {QStringLiteral("id"), QStringLiteral("nope")}});
     QVERIFY(sent.isEmpty());
+    // Later pictures only carry the area that changed.
+    QImage patch(16, 8, QImage::Format_RGB32);
+    patch.fill(Qt::blue);
+    QByteArray patchJpeg;
+    QBuffer patchBuffer(&patchJpeg);
+    patchBuffer.open(QIODevice::WriteOnly);
+    QVERIFY(patch.save(&patchBuffer, "JPEG"));
+    const auto framePacket = [&](int seq, int x, int y, int fw, int fh) {
+      return QCborMap{{QStringLiteral("mirror"), true},  {QStringLiteral("type"), QStringLiteral("frame")},
+                      {QStringLiteral("id"), QStringLiteral("w1")}, {QStringLiteral("seq"), seq},
+                      {QStringLiteral("x"), x},          {QStringLiteral("y"), y},
+                      {QStringLiteral("fw"), fw},        {QStringLiteral("fh"), fh},
+                      {QStringLiteral("jpeg"), patchJpeg}};
+    };
+    sent.clear();
+    WindowMirror::handlePacket("server", framePacket(8, 16, 8, 40, 30));
+    QCOMPARE(sent.size(), 1);
+    QCOMPARE(sent.first().second.value("type").toString(), QStringLiteral("ack"));
+    const auto shown = view->grab().toImage();
+    const QColor inPatch = shown.pixelColor(240, 120), outside = shown.pixelColor(50, 250);
+    QVERIFY2(inPatch.blue() > 180 && inPatch.red() < 90, qPrintable(inPatch.name()));
+    QVERIFY2(outside.red() > 180 && outside.blue() < 90, qPrintable(outside.name()));
+    // A patch for a picture of another size cannot be shown: a complete one is requested.
+    sent.clear();
+    WindowMirror::handlePacket("server", framePacket(9, 16, 8, 80, 60));
+    QCOMPARE(sent.size(), 2);
+    QCOMPARE(sent.first().second.value("type").toString(), QStringLiteral("refresh"));
+    QCOMPARE(sent.last().second.value("type").toString(), QStringLiteral("ack"));
+    // The real window changing size by itself resizes the copy, without an echo.
+    sent.clear();
+    WindowMirror::handlePacket("server", {{QStringLiteral("type"), QStringLiteral("size")},
+                                          {QStringLiteral("id"), QStringLiteral("w1")},
+                                          {QStringLiteral("w"), 500},
+                                          {QStringLiteral("h"), 350}});
+    QCOMPARE(view->size(), QSize(500, 350));
+    QTest::qWait(250);
+    QVERIFY(std::none_of(sent.cbegin(), sent.cend(), [](const auto &p) { return p.second.value("type").toString() == "resize"; }));
     // Closing the copy tells the owner to bring its window back.
     view->close();
     QTRY_VERIFY(WindowMirror::viewerWindows().isEmpty());
     QVERIFY(std::any_of(sent.cbegin(), sent.cend(), [](const auto &p) { return p.second.value("type").toString() == "close"; }));
+  }
+  void windowMirrorSendsOnlyWhatChanged()
+  {
+    QImage before(100, 60, QImage::Format_RGB32), after;
+    before.fill(Qt::white);
+    after = before;
+    QVERIFY(WindowMirror::changedRect(before.constBits(), after.constBits(), 100, 60, before.bytesPerLine()).isEmpty());
+    after.setPixel(21, 10, 0xff000000);
+    after.setPixel(45, 33, 0xff000000);
+    QCOMPARE(
+        WindowMirror::changedRect(before.constBits(), after.constBits(), 100, 60, before.bytesPerLine()),
+        QRect(QPoint(16, 8), QPoint(47, 39))
+    );
+    // Blocks are cut off at the picture's edge.
+    after = before;
+    after.setPixel(99, 59, 0xff000000);
+    QCOMPARE(
+        WindowMirror::changedRect(before.constBits(), after.constBits(), 100, 60, before.bytesPerLine()),
+        QRect(QPoint(96, 56), QPoint(99, 59))
+    );
   }
   void windowMirrorOwnerClosingDoesNotEcho()
   {
@@ -271,6 +333,8 @@ private Q_SLOTS:
                    {QStringLiteral("h"), 200}}
     );
     QVERIFY(WindowMirror::handleStart("w2"));
+    ++WindowMirrorRouting::remoteLeftUps;
+    QCoreApplication::processEvents();
     sent.clear();
     WindowMirror::handlePacket("server", {{QStringLiteral("type"), QStringLiteral("closed")}, {QStringLiteral("id"), QStringLiteral("w2")}});
     QTRY_VERIFY(WindowMirror::viewerWindows().isEmpty());

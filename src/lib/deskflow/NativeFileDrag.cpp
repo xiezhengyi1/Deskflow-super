@@ -17,6 +17,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QTimer>
+#include <QUuid>
 #include <map>
 
 // Edge drag, all on the core process's Qt main thread:
@@ -94,6 +95,29 @@ QString checkDraggedFiles(const QStringList &paths)
   return {};
 }
 
+// Starts sending files that were being dragged here; its "offer" opens the transfer on the peer.
+void sendDraggedFiles(const QString &peer, const QString &id, const QStringList &paths, int edge)
+{
+  auto transfer = std::make_shared<DragTransfer>();
+  transfer->peer = peer;
+  transfer->outgoing = true;
+  transfer->session = std::make_unique<FileTransferSession>();
+  auto *session = transfer->session.get();
+  session->send = [peer](const QCborMap &out) { sendDrag(peer, out); };
+  session->failed = [id](const QString &reason) {
+    LOG_WARN("edge drag: sending stopped: %s", qPrintable(reason));
+    retire(id, 0);
+  };
+  session->sourceReady = [id] {
+    LOG_INFO("edge drag: files delivered");
+    retire(id, 0);
+  };
+  session->staged = [] {};
+  transfers[id] = transfer;
+  session->setId(id);
+  session->begin(paths, edge, {});
+}
+
 void handleProbe(const QString &peer, const QCborMap &packet)
 {
   const auto id = packet.value(QStringLiteral("id")).toString();
@@ -121,25 +145,31 @@ void handleProbe(const QString &peer, const QCborMap &packet)
     }
     LOG_INFO("edge drag: handing %d file(s) to the other computer", static_cast<int>(paths.size()));
     NativeFileDragPlatform::releaseSourceDrag();
-    auto transfer = std::make_shared<DragTransfer>();
-    transfer->peer = peer;
-    transfer->outgoing = true;
-    transfer->session = std::make_unique<FileTransferSession>();
-    auto *session = transfer->session.get();
-    session->send = [peer](const QCborMap &out) { sendDrag(peer, out); };
-    session->failed = [id](const QString &reason) {
-      LOG_WARN("edge drag: sending stopped: %s", qPrintable(reason));
-      retire(id, 0);
-    };
-    session->sourceReady = [id] {
-      LOG_INFO("edge drag: files delivered");
-      retire(id, 0);
-    };
-    session->staged = [] {};
-    transfers[id] = transfer;
-    session->setId(id);
     // The offer tells the server the drag is ours to hand over; the server then switches screens.
-    session->begin(paths, edge, {});
+    sendDraggedFiles(peer, id, paths, edge);
+  });
+}
+
+// A file drag that began inside a mirrored window and left the viewer's window: the pointer is
+// already on the other computer, so its drag starts right after the offer.
+void handOverMirrorDrag(const QString &peer, std::function<void(WindowMirror::DragOut)> done)
+{
+  NativeFileDragPlatform::probe([peer, done = std::move(done)](const QStringList &paths) {
+    if (paths.isEmpty()) {
+      done(WindowMirror::DragOut::Nothing);
+      return;
+    }
+    if (const auto problem = checkDraggedFiles(paths); !problem.isEmpty()) {
+      LOG_INFO("window mirror: the dragged items stay on this computer, %s", qPrintable(problem));
+      done(WindowMirror::DragOut::Unsupported);
+      return;
+    }
+    const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    LOG_INFO("window mirror: handing %d dragged file(s) to the other computer", static_cast<int>(paths.size()));
+    NativeFileDragPlatform::releaseSourceDrag();
+    sendDraggedFiles(peer, id, paths, 1);
+    sendDrag(peer, {{QStringLiteral("type"), QStringLiteral("start")}, {QStringLiteral("id"), id}});
+    done(WindowMirror::DragOut::HandedOver);
   });
 }
 
@@ -278,6 +308,9 @@ void NativeFileDrag::create(QObject *parent)
   WindowMirror::init(controller, [](const QString &peer, const QCborMap &packet) {
     if (const auto send = peers.value(peer))
       send(packet);
+  });
+  WindowMirror::setDragOutHandler([](const QString &peer, std::function<void(WindowMirror::DragOut)> done) {
+    handOverMirrorDrag(peer, std::move(done));
   });
 }
 

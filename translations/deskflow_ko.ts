@@ -173,6 +173,34 @@ p, li { white-space: pre-wrap; }
         <source>Use dynamic reconnection time based on connection attempts</source>
         <translation type="unfinished">연결 시도 횟수에 따라 동적 재연결 시간을 사용합니다</translation>
     </message>
+    <message>
+        <source>Use Mac shortcuts for remote input</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Map remote Command+C/V/X/Z/A/F/S (including Shift variants) to Ctrl shortcuts. Other combinations, Option, Control and the local Windows keyboard keep their original behavior.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Automatically find the bound server on the local network</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Forget server binding</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Binding and saved address will be cleared when you save.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Not bound. The first successful secure connection binds the server automatically.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Bound server certificate: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>ComputerSettingsDialog</name>
@@ -330,6 +358,154 @@ p, li { white-space: pre-wrap; }
     <message>
         <source>&lt;center&gt;Computer: &lt;b&gt;%1&lt;/b&gt;&lt;/center&gt;&lt;br&gt;Double click to edit settings&lt;br&gt;Drag computer to the trashcan to remove it</source>
         <translation type="unfinished">&lt;center&gt;컴퓨터: &lt;b&gt;%1&lt;/b&gt;&lt;/center&gt;&lt;br&gt;설정을 편집하려면 두 번 클릭하세요&lt;br&gt;컴퓨터를 휴지통으로 드래그하여 제거하세요</translation>
+    </message>
+</context>
+<context>
+    <name>FileRelayWindow</name>
+    <message>
+        <source>File relay</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Tip: you can drag files straight across the screen edge to the other computer.
+Or drop files here, choose a connected computer and click Send.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Send to:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Choose files...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Clear</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Send</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Choose files</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Receive files from connected computers automatically</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Receive</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Reject</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Cancel transfer</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>The receiver rejected the transfer.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Connect both computers and enable File relay on both ends.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Receive folder...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Open receive folder</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Receive folder</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Received files (double-click to open, or drag to a local folder):</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>The transfer timed out.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>No connected computer was found. Connect Deskflow, then click Send.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Receive folder: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>The other computer disconnected.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Choose regular files; folders and symbolic links are not supported.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>A transfer is already in progress. Send the files again when it finishes.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>No files to send.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Waiting for a connected computer...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Several computers are connected. Choose one and click Send.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Received %1 file(s). Saved to %2</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Transfer stopped: %1</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Sent successfully. The other computer saved the files.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Waiting for the other computer...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Receiving and verifying files...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>The transfer was cancelled.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>The receiver is busy or the file offer is invalid.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>%1 wants to send %2 file(s), %3 bytes. Click Receive to save them.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Incoming file transfer.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Sending files...</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
@@ -575,6 +751,14 @@ Do you want to connect to the server?
         <translation>&lt;p&gt;서버 &apos;%1&apos;에 연결하지 못했습니다.&lt;/p&gt;&lt;p&gt;같은 이름의 클라이언트가 이미 서버에 연결되어 있습니다.&lt;/p&gt;&lt;p&gt;고유한 이름을 사용하고, 클라이언트 프로세스가 하나만 실행 중인지 확인하세요.&lt;/p&gt;</translation>
     </message>
     <message>
+        <source>File relay...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Add to right-click &quot;Send to&quot; menu</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>View &amp;Help</source>
         <translation type="unfinished">도움말 보기(&amp;H)</translation>
     </message>
@@ -615,6 +799,14 @@ Do you want to connect to the server?
 A bound IP is now invalid, you may need to restart the server.</source>
         <translation>
 연결된 IP가 이제 유효하지 않습니다. 서버를 재시작해야 합니다.</translation>
+    </message>
+    <message>
+        <source>Files received</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File transfer</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>&amp;File</source>
@@ -742,6 +934,15 @@ Additionally, check you are able to %1 the server config file: %2</source>
     <message>
         <source>&lt;p&gt;Keyboard layout support requires matching layouts on all computers. The following layouts from the other computer are not installed on this computer:&lt;/p&gt;&lt;p&gt;&lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Please install them to enable support for these layouts.&lt;/p&gt;</source>
         <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>NativeFileDrag</name>
+    <message numerus="yes">
+        <source>Receiving %n file(s) from the other computer... %1%</source>
+        <translation type="unfinished">
+            <numerusform></numerusform>
+        </translation>
     </message>
 </context>
 <context>
@@ -1291,6 +1492,30 @@ Enabling this setting will disable the server config GUI.</source>
         <source>Remove all settings</source>
         <translation type="unfinished">모든 설정 제거</translation>
     </message>
+    <message>
+        <source>Server send speed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Client receive speed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>File transfer between Windows and macOS</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Enable on both computers. Drag files across the screen edge and drop them on the other computer, or use File relay from the File menu. Supports regular files and requires desktop mode on Windows.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>LittleBigMouse compatibility (Windows client)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Use local cursor positioning and report corrected coordinates to a patched Deskflow server. Keeps automatic edge switching. Reconnect after changing this setting.</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>SettingsDialogButtonBox</name>
@@ -1389,6 +1614,17 @@ Enabling this setting will disable the server config GUI.</source>
     <message>
         <source>Encryption Disabled</source>
         <translation>암호화 사용 안 함</translation>
+    </message>
+</context>
+<context>
+    <name>WindowMirror</name>
+    <message>
+        <source>Connecting to the window…</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>%1 (from the other computer)</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>

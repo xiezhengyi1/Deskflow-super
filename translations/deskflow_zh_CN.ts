@@ -181,12 +181,26 @@ p, li { white-space: pre-wrap; }
         <source>Use dynamic reconnection time based on connection attempts</source>
         <translation type="unfinished">根据连接尝试次数，采用动态重连时间</translation>
     </message>
-
-    <message><source>Automatically find the bound server on the local network</source><translation>自动在局域网寻找已绑定的服务器</translation></message>
-    <message><source>Forget server binding</source><translation>解除服务器绑定</translation></message>
-    <message><source>Binding and saved address will be cleared when you save.</source><translation>保存后将解除绑定并清空已保存的地址。</translation></message>
-    <message><source>Not bound. The first successful secure connection binds the server automatically.</source><translation>尚未绑定。首次安全连接成功后，将自动绑定服务器。</translation></message>
-    <message><source>Bound server certificate: %1</source><translation>已绑定服务器证书：%1</translation></message>
+    <message>
+        <source>Automatically find the bound server on the local network</source>
+        <translation>自动在局域网寻找已绑定的服务器</translation>
+    </message>
+    <message>
+        <source>Forget server binding</source>
+        <translation>解除服务器绑定</translation>
+    </message>
+    <message>
+        <source>Binding and saved address will be cleared when you save.</source>
+        <translation>保存后将解除绑定并清空已保存的地址。</translation>
+    </message>
+    <message>
+        <source>Not bound. The first successful secure connection binds the server automatically.</source>
+        <translation>尚未绑定。首次安全连接成功后，将自动绑定服务器。</translation>
+    </message>
+    <message>
+        <source>Bound server certificate: %1</source>
+        <translation>已绑定服务器证书：%1</translation>
+    </message>
 </context>
 <context>
     <name>ComputerSettingsDialog</name>
@@ -344,6 +358,155 @@ p, li { white-space: pre-wrap; }
     <message>
         <source>&lt;center&gt;Computer: &lt;b&gt;%1&lt;/b&gt;&lt;/center&gt;&lt;br&gt;Double click to edit settings&lt;br&gt;Drag computer to the trashcan to remove it</source>
         <translation type="unfinished">&lt;center&gt;计算机：&lt;b&gt;%1&lt;/b&gt;&lt;/center&gt;&lt;br&gt;双击以编辑设置&lt;br&gt;将计算机拖至废纸篓以将其移除</translation>
+    </message>
+</context>
+<context>
+    <name>FileRelayWindow</name>
+    <message>
+        <source>File relay</source>
+        <translation>文件中继</translation>
+    </message>
+    <message>
+        <source>Tip: you can drag files straight across the screen edge to the other computer.
+Or drop files here, choose a connected computer and click Send.</source>
+        <translation>提示：可以直接把文件拖过屏幕边缘，放到另一台电脑上。
+也可以把文件拖入此窗口，选择已连接的电脑，再点击“发送”。</translation>
+    </message>
+    <message>
+        <source>Send to:</source>
+        <translation>发送到：</translation>
+    </message>
+    <message>
+        <source>Choose files...</source>
+        <translation>选择文件…</translation>
+    </message>
+    <message>
+        <source>Clear</source>
+        <translation>清空</translation>
+    </message>
+    <message>
+        <source>Send</source>
+        <translation>发送</translation>
+    </message>
+    <message>
+        <source>Choose files</source>
+        <translation>选择文件</translation>
+    </message>
+    <message>
+        <source>Receive</source>
+        <translation>接收</translation>
+    </message>
+    <message>
+        <source>Reject</source>
+        <translation>拒收</translation>
+    </message>
+    <message>
+        <source>Cancel transfer</source>
+        <translation>取消传输</translation>
+    </message>
+    <message>
+        <source>The receiver rejected the transfer.</source>
+        <translation>对方拒绝接收。</translation>
+    </message>
+    <message>
+        <source>Connect both computers and enable File relay on both ends.</source>
+        <translation>请连接两台电脑，并在两端打开文件中继。</translation>
+    </message>
+    <message>
+        <source>Receive folder...</source>
+        <translation>接收目录…</translation>
+    </message>
+    <message>
+        <source>Open receive folder</source>
+        <translation>打开接收目录</translation>
+    </message>
+    <message>
+        <source>Receive folder</source>
+        <translation>接收目录</translation>
+    </message>
+    <message>
+        <source>Received files (double-click to open, or drag to a local folder):</source>
+        <translation>已接收文件（双击打开，或拖到本机文件夹）：</translation>
+    </message>
+    <message>
+        <source>The transfer timed out.</source>
+        <translation>传输等待超时。</translation>
+    </message>
+    <message>
+        <source>Receive folder: %1</source>
+        <translation>接收目录：%1</translation>
+    </message>
+    <message>
+        <source>The other computer disconnected.</source>
+        <translation>对端已断开连接。</translation>
+    </message>
+    <message>
+        <source>Choose regular files; folders and symbolic links are not supported.</source>
+        <translation>请选择普通文件；暂不支持文件夹和符号链接。</translation>
+    </message>
+    <message>
+        <source>Received %1 file(s). Saved to %2</source>
+        <translation>已接收 %1 个文件，保存于 %2</translation>
+    </message>
+    <message>
+        <source>Transfer stopped: %1</source>
+        <translation>传输已停止：%1</translation>
+    </message>
+    <message>
+        <source>Sent successfully. The other computer saved the files.</source>
+        <translation>发送成功，对端已保存文件。</translation>
+    </message>
+    <message>
+        <source>Waiting for the other computer...</source>
+        <translation>等待对端…</translation>
+    </message>
+    <message>
+        <source>Receive files from connected computers automatically</source>
+        <translation>自动接收已连接电脑发来的文件</translation>
+    </message>
+    <message>
+        <source>Receiving and verifying files...</source>
+        <translation>正在接收并校验文件…</translation>
+    </message>
+    <message>
+        <source>The transfer was cancelled.</source>
+        <translation>传输已取消。</translation>
+    </message>
+    <message>
+        <source>The receiver is busy or the file offer is invalid.</source>
+        <translation>对方正在传输其他文件，或本次文件信息无效。</translation>
+    </message>
+    <message>
+        <source>%1 wants to send %2 file(s), %3 bytes. Click Receive to save them.</source>
+        <translation>%1 请求发送 %2 个文件，共 %3 字节。点击“接收”后保存。</translation>
+    </message>
+    <message>
+        <source>Incoming file transfer.</source>
+        <translation>有新的文件接收请求。</translation>
+    </message>
+    <message>
+        <source>Sending files...</source>
+        <translation>正在发送文件…</translation>
+    </message>
+    <message>
+        <source>A transfer is already in progress. Send the files again when it finishes.</source>
+        <translation>已有传输正在进行，请在完成后重新发送。</translation>
+    </message>
+    <message>
+        <source>No files to send.</source>
+        <translation>没有可发送的文件。</translation>
+    </message>
+    <message>
+        <source>Waiting for a connected computer...</source>
+        <translation>等待已连接的电脑…</translation>
+    </message>
+    <message>
+        <source>Several computers are connected. Choose one and click Send.</source>
+        <translation>已连接多台电脑，请选择一台并点击“发送”。</translation>
+    </message>
+    <message>
+        <source>No connected computer was found. Connect Deskflow, then click Send.</source>
+        <translation>未找到已连接的电脑。请先连接 Deskflow，再点击“发送”。</translation>
     </message>
 </context>
 <context>
@@ -771,15 +934,24 @@ Additionally, check you are able to %1 the server config file: %2</source>
     </message>
     <message>
         <source>File relay</source>
-        <translation>文件中继</translation>
+        <translation type="vanished">文件中继</translation>
     </message>
     <message>
         <source>Start Deskflow before opening the file relay.</source>
-        <translation>请先启动 Deskflow，再打开文件中继。</translation>
+        <translation type="vanished">请先启动 Deskflow，再打开文件中继。</translation>
     </message>
     <message>
         <source>Add to right-click &quot;Send to&quot; menu</source>
         <translation>添加到右键“发送到”菜单</translation>
+    </message>
+</context>
+<context>
+    <name>NativeFileDrag</name>
+    <message numerus="yes">
+        <source>Receiving %n file(s) from the other computer... %1%</source>
+        <translation type="unfinished">
+            <numerusform></numerusform>
+        </translation>
     </message>
 </context>
 <context>
@@ -960,6 +1132,14 @@ Additionally, check you are able to %1 the server config file: %2</source>
     <message>
         <source>Super</source>
         <translation type="unfinished">Super</translation>
+    </message>
+    <message>
+        <source>Transferring files. Keep holding the mouse button; release to cancel.</source>
+        <translation type="vanished">正在传输文件，请继续按住鼠标；提前松开将取消。</translation>
+    </message>
+    <message>
+        <source>File drag cancelled: %1</source>
+        <translation type="vanished">文件拖拽已取消：%1</translation>
     </message>
 </context>
 <context>
@@ -1349,11 +1529,11 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
     <message>
         <source>Native file drag between Windows and macOS</source>
-        <translation>Windows 与 macOS 原生跨屏拖拽文件</translation>
+        <translation type="vanished">Windows 与 macOS 原生跨屏拖拽文件</translation>
     </message>
     <message>
         <source>Enable on both computers. Hold the mouse button while files are staged, then drop into Explorer or Finder. Regular files are copied; folders are not supported. Requires desktop mode on Windows.</source>
-        <translation>两台电脑都需启用。按住鼠标等待文件传完，再拖放到资源管理器或 Finder。复制普通文件，不支持文件夹；Windows 需使用桌面模式。</translation>
+        <translation type="vanished">两台电脑都需启用。按住鼠标等待文件传完，再拖放到资源管理器或 Finder。复制普通文件，不支持文件夹；Windows 需使用桌面模式。</translation>
     </message>
     <message>
         <source>File transfer between Windows and macOS</source>
@@ -1464,6 +1644,17 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
 </context>
 <context>
+    <name>WindowMirror</name>
+    <message>
+        <source>Connecting to the window…</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>%1 (from the other computer)</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
     <name>i18n</name>
     <message>
         <source>LocalizedName</source>
@@ -1503,161 +1694,6 @@ Enabling this setting will disable the server config GUI.</source>
     <message>
         <source>A computer with this name already exists</source>
         <translation type="unfinished">一台同名的计算机已经存在</translation>
-    </message>
-</context>
-
-<context>
-    <name>QObject</name>
-    <message><source>Transferring files. Keep holding the mouse button; release to cancel.</source><translation>正在传输文件，请继续按住鼠标；提前松开将取消。</translation></message>
-    <message><source>File drag cancelled: %1</source><translation>文件拖拽已取消：%1</translation></message>
-</context>
-<context>
-    <name>FileRelayWindow</name>
-    <message>
-        <source>File relay</source>
-        <translation>文件中继</translation>
-    </message>
-    <message>
-        <source>Tip: you can drag files straight across the screen edge to the other computer.
-Or drop files here, choose a connected computer and click Send.</source>
-        <translation>提示：可以直接把文件拖过屏幕边缘，放到另一台电脑上。
-也可以把文件拖入此窗口，选择已连接的电脑，再点击“发送”。</translation>
-    </message>
-    <message>
-        <source>Send to:</source>
-        <translation>发送到：</translation>
-    </message>
-    <message>
-        <source>Choose files...</source>
-        <translation>选择文件…</translation>
-    </message>
-    <message>
-        <source>Clear</source>
-        <translation>清空</translation>
-    </message>
-    <message>
-        <source>Send</source>
-        <translation>发送</translation>
-    </message>
-    <message>
-        <source>Choose files</source>
-        <translation>选择文件</translation>
-    </message>
-    <message>
-        <source>Receive</source>
-        <translation>接收</translation>
-    </message>
-    <message>
-        <source>Reject</source>
-        <translation>拒收</translation>
-    </message>
-    <message>
-        <source>Cancel transfer</source>
-        <translation>取消传输</translation>
-    </message>
-    <message>
-        <source>The receiver rejected the transfer.</source>
-        <translation>对方拒绝接收。</translation>
-    </message>
-    <message>
-        <source>Connect both computers and enable File relay on both ends.</source>
-        <translation>请连接两台电脑，并在两端打开文件中继。</translation>
-    </message>
-    <message>
-        <source>Receive folder...</source>
-        <translation>接收目录…</translation>
-    </message>
-    <message>
-        <source>Open receive folder</source>
-        <translation>打开接收目录</translation>
-    </message>
-    <message>
-        <source>Receive folder</source>
-        <translation>接收目录</translation>
-    </message>
-    <message>
-        <source>Received files (double-click to open, or drag to a local folder):</source>
-        <translation>已接收文件（双击打开，或拖到本机文件夹）：</translation>
-    </message>
-    <message>
-        <source>The transfer timed out.</source>
-        <translation>传输等待超时。</translation>
-    </message>
-    <message>
-        <source>Receive folder: %1</source>
-        <translation>接收目录：%1</translation>
-    </message>
-    <message>
-        <source>The other computer disconnected.</source>
-        <translation>对端已断开连接。</translation>
-    </message>
-    <message>
-        <source>Choose regular files; folders and symbolic links are not supported.</source>
-        <translation>请选择普通文件；暂不支持文件夹和符号链接。</translation>
-    </message>
-    <message>
-        <source>Received %1 file(s). Saved to %2</source>
-        <translation>已接收 %1 个文件，保存于 %2</translation>
-    </message>
-    <message>
-        <source>Transfer stopped: %1</source>
-        <translation>传输已停止：%1</translation>
-    </message>
-    <message>
-        <source>Sent successfully. The other computer saved the files.</source>
-        <translation>发送成功，对端已保存文件。</translation>
-    </message>
-    <message>
-        <source>Waiting for the other computer...</source>
-        <translation>等待对端…</translation>
-    </message>
-    <message>
-        <source>Receive files from connected computers automatically</source>
-        <translation>自动接收已连接电脑发来的文件</translation>
-    </message>
-    <message>
-        <source>Receiving and verifying files...</source>
-        <translation>正在接收并校验文件…</translation>
-    </message>
-    <message>
-        <source>The transfer was cancelled.</source>
-        <translation>传输已取消。</translation>
-    </message>
-    <message>
-        <source>The receiver is busy or the file offer is invalid.</source>
-        <translation>对方正在传输其他文件，或本次文件信息无效。</translation>
-    </message>
-    <message>
-        <source>%1 wants to send %2 file(s), %3 bytes. Click Receive to save them.</source>
-        <translation>%1 请求发送 %2 个文件，共 %3 字节。点击“接收”后保存。</translation>
-    </message>
-    <message>
-        <source>Incoming file transfer.</source>
-        <translation>有新的文件接收请求。</translation>
-    </message>
-    <message>
-        <source>Sending files...</source>
-        <translation>正在发送文件…</translation>
-    </message>
-    <message>
-        <source>A transfer is already in progress. Send the files again when it finishes.</source>
-        <translation>已有传输正在进行，请在完成后重新发送。</translation>
-    </message>
-    <message>
-        <source>No files to send.</source>
-        <translation>没有可发送的文件。</translation>
-    </message>
-    <message>
-        <source>Waiting for a connected computer...</source>
-        <translation>等待已连接的电脑…</translation>
-    </message>
-    <message>
-        <source>Several computers are connected. Choose one and click Send.</source>
-        <translation>已连接多台电脑，请选择一台并点击“发送”。</translation>
-    </message>
-    <message>
-        <source>No connected computer was found. Connect Deskflow, then click Send.</source>
-        <translation>未找到已连接的电脑。请先连接 Deskflow，再点击“发送”。</translation>
     </message>
 </context>
 </TS>

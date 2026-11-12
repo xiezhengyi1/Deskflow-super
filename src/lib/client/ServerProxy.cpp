@@ -17,6 +17,7 @@
 #include "deskflow/DeskflowException.h"
 #include "deskflow/NativeFileDrag.h"
 #include "deskflow/NativeFileDragPlatform.h"
+#include "deskflow/WindowMirrorRouting.h"
 #include "deskflow/OptionTypes.h"
 #include "deskflow/ProtocolTypes.h"
 #include "deskflow/ProtocolUtil.h"
@@ -742,8 +743,13 @@ void ServerProxy::mouseUp()
 
   // forward
   forwardPointerModifiers();
+  if (id == kButtonLeft)
+    ++WindowMirrorRouting::remoteLeftUps; // a mirror window that arrived with the button held is dropped
 #ifdef Q_OS_WIN
-  if (id == kButtonLeft && NativeFileDragPlatform::releaseReceivedDrag())
+  // A drag received over the screen edge has no real button behind it: its release is only
+  // told to the drag. A drag out of a mirror window began with a real press here, which
+  // still has to be released.
+  if (id == kButtonLeft && NativeFileDragPlatform::releaseReceivedDrag() && !NativeFileDragPlatform::leftButtonDown())
     return;
 #endif
   m_client->mouseUp(static_cast<ButtonID>(id));

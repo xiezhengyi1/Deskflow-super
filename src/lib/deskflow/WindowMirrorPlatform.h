@@ -5,6 +5,7 @@
 #pragma once
 #include <QByteArray>
 #include <QPointF>
+#include <QRect>
 #include <QRectF>
 #include <QSize>
 #include <QString>
@@ -37,11 +38,17 @@ void endWindowDrag();
 // Screen Recording permission; asks the user once when it is missing.
 bool canCapture();
 
-// Moves the window out of sight, remembering where it was. False if it could not be found.
-bool hide(const DraggedWindow &window);
-// Puts a hidden window back where it was.
-void restore(quint32 windowId);
+// Starts mirroring a window. It stays on this computer's screen, because the system only
+// delivers clicks to windows that are really on screen: it is moved back to where its drag
+// began, fully inside the screen. False if Accessibility cannot reach the window.
+bool adopt(const DraggedWindow &window);
+// Stops mirroring; the window stays where it is.
+void release(quint32 windowId);
+// Where an adopted window is now (global, top-left origin, points), or nothing if it is gone.
+std::optional<QRectF> frame(quint32 windowId);
 void resize(quint32 windowId, QSizeF points);
+// Brings the window to the front so that clicks at its position reach it.
+void raise(quint32 windowId);
 // Makes the owning app frontmost with this window as its key window, so typing reaches it.
 void activateForKeyboard(quint32 windowId);
 
@@ -52,21 +59,27 @@ enum class MouseAction
   Up,
   Drag
 };
-// point is inside the window, in points. button uses Deskflow ButtonID values.
+// Real input at the window's place on screen. point is inside the window, in points (a drag
+// may go outside). button uses Deskflow ButtonID values.
 void injectMouse(quint32 windowId, MouseAction action, int button, QPointF point, int clicks);
 void injectWheel(quint32 windowId, QPointF point, int xDelta, int yDelta);
 
-// Live capture of one window. Callbacks arrive on an arbitrary thread.
+// Live capture of one window at its native resolution. Callbacks arrive on an arbitrary thread.
 class Capture
 {
 public:
   virtual ~Capture() = default;
-  // Encode and deliver the newest frame (now if one is waiting, else as soon as one arrives).
+  // Encode and deliver what changed since the last delivered frame (now if something is
+  // waiting, else as soon as the window changes).
   virtual void requestFrame() = 0;
-  virtual void setOutputSize(QSize pixels) = 0;
+  // The next frame is a complete picture.
+  virtual void requestFullFrame() = 0;
+  // The window changed size: capture at the new native size.
+  virtual void refreshSize() = 0;
 };
-using FrameCallback = std::function<void(const QByteArray &jpeg, QSize pixels)>;
+// jpeg holds the area `patch` of a picture `full` pixels large.
+using FrameCallback = std::function<void(const QByteArray &jpeg, QRect patch, QSize full, int encodeMs)>;
 using StopCallback = std::function<void(const QString &reason)>;
-std::unique_ptr<Capture> startCapture(quint32 windowId, QSize pixels, FrameCallback onFrame, StopCallback onStopped);
+std::unique_ptr<Capture> startCapture(quint32 windowId, FrameCallback onFrame, StopCallback onStopped);
 
 } // namespace WindowMirrorPlatform
